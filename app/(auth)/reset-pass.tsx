@@ -18,7 +18,6 @@ import { useAuth } from "../../context/AuthContext";
 export default function ResetPass() {
   const [email, setEmail] = useState("");
   const [loading, setLoading] = useState(false);
-  const [sent, setSent] = useState(false);
   const { onResetPassword } = useAuth();
 
   const validateEmail = (email: string) => {
@@ -45,15 +44,14 @@ export default function ResetPass() {
       const result = await onResetPassword!(trimmedEmail);
 
       if (result && !result.error) {
-        setSent(true);
-        Alert.alert(
-          "Success",
-          "Password reset email sent! Please check your inbox and spam folder.",
-          [{ text: "OK" }]
-        );
-        console.log("Password reset email sent");
+        // Navigate to update password screen with email
+        router.push({
+          pathname: "/(auth)/update-pass",
+          params: { email: trimmedEmail },
+        });
+        console.log("Verification code sent");
       } else {
-        Alert.alert("Error", result?.msg || "Failed to send reset email");
+        Alert.alert("Error", result?.msg || "Failed to send verification code");
         console.log("Password reset failed:", result?.msg);
       }
     } catch (error: any) {
@@ -80,70 +78,45 @@ export default function ResetPass() {
           <View style={styles.header}>
             <Text style={styles.title}>Reset Password</Text>
             <Text style={styles.subtitle}>
-              {sent
-                ? "Check your email for the password reset link"
-                : "Enter your email to receive a password reset link"}
+              Enter your email to receive a 6-digit verification code
             </Text>
           </View>
 
-          {!sent ? (
-            <View style={styles.form}>
-              <View style={styles.inputContainer}>
-                <Text style={styles.label}>Email</Text>
-                <TextInput
-                  style={styles.input}
-                  placeholder="Enter your email"
-                  placeholderTextColor="#748cab"
-                  value={email}
-                  onChangeText={setEmail}
-                  autoCapitalize="none"
-                  keyboardType="email-address"
-                  editable={!loading}
-                  autoCorrect={false}
-                />
-              </View>
+          <View style={styles.form}>
+            <View style={styles.inputContainer}>
+              <Text style={styles.label}>Email</Text>
+              <TextInput
+                style={styles.input}
+                placeholder="Enter your email"
+                placeholderTextColor="#748cab"
+                value={email}
+                onChangeText={setEmail}
+                autoCapitalize="none"
+                keyboardType="email-address"
+                editable={!loading}
+                autoCorrect={false}
+              />
+            </View>
 
-              <TouchableOpacity
-                style={[loading && styles.buttonDisabled]}
-                onPress={handleResetPassword}
-                disabled={loading}
+            <TouchableOpacity
+              style={[loading && styles.buttonDisabled]}
+              onPress={handleResetPassword}
+              disabled={loading}
+            >
+              <LinearGradient
+                colors={["#3e5c76", "#748cab"]}
+                start={{ x: 0, y: 0 }}
+                end={{ x: 1, y: 0 }}
+                style={styles.button}
               >
-                <LinearGradient
-                  colors={["#3e5c76", "#748cab"]}
-                  start={{ x: 0, y: 0 }}
-                  end={{ x: 1, y: 0 }}
-                  style={styles.button}
-                >
-                  {loading ? (
-                    <ActivityIndicator color="#f0ebd8" />
-                  ) : (
-                    <Text style={styles.buttonText}>Send Reset Link</Text>
-                  )}
-                </LinearGradient>
-              </TouchableOpacity>
-            </View>
-          ) : (
-            <View style={styles.successContainer}>
-              <Text style={styles.successIcon}>✓</Text>
-              <Text style={styles.successText}>Email sent successfully!</Text>
-              <Text style={styles.successSubtext}>
-                Check your inbox and spam folder for the reset link
-              </Text>
-              <TouchableOpacity
-                onPress={() => router.replace("/(auth)/login" as any)}
-                style={styles.successButtonContainer}
-              >
-                <LinearGradient
-                  colors={["#3e5c76", "#748cab"]}
-                  start={{ x: 0, y: 0 }}
-                  end={{ x: 1, y: 0 }}
-                  style={styles.button}
-                >
-                  <Text style={styles.buttonText}>Back to Login</Text>
-                </LinearGradient>
-              </TouchableOpacity>
-            </View>
-          )}
+                {loading ? (
+                  <ActivityIndicator color="#f0ebd8" />
+                ) : (
+                  <Text style={styles.buttonText}>Send Verification Code</Text>
+                )}
+              </LinearGradient>
+            </TouchableOpacity>
+          </View>
 
           <View style={styles.footer}>
             <Text style={styles.footerText}>Remember your password? </Text>

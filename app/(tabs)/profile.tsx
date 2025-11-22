@@ -46,11 +46,9 @@ export default function Profile() {
           </Text>
         </View>
         <Text style={styles.name}>
-          {" "}
-          Hello{", "}
-          {authState?.user?.user_metadata?.display_name ||
-            "No username found for this user."}
-          {"!"}
+          {authState?.user?.user_metadata?.display_name
+            ? `Hello, ${authState.user.user_metadata.display_name}!`
+            : "Welcome!"}
         </Text>
         {/* <Text style={styles.userId}>
           User ID: {authState?.user?.id?.slice(0, 8)}...

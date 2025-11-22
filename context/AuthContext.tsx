@@ -12,6 +12,18 @@ interface AuthProps {
   onLogin?: (email: string, password: string) => Promise<any>;
   onLogout?: () => Promise<any>;
   onResetPassword?: (email: string) => Promise<any>;
+  onVerifyOtpAndUpdatePassword?: (
+    email: string,
+    token: string,
+    newPassword: string
+  ) => Promise<any>;
+  onSendVerificationCode?: (email: string) => Promise<any>;
+  onVerifyEmailWithOtp?: (
+    email: string,
+    token: string,
+    name: string,
+    password: string
+  ) => Promise<any>;
 }
 
 const AuthContext = createContext<AuthProps>({});
@@ -98,9 +110,6 @@ export const AuthProvider = ({ children }: any) => {
         { email_input: email }
       );
 
-      // If the RPC function doesn't exist, proceed with normal signup
-      // (we'll create this function below)
-
       const { data, error } = await supabase.auth.signUp({
         options: {
           data: {
@@ -119,6 +128,17 @@ export const AuthProvider = ({ children }: any) => {
           return {
             error: true,
             msg: "This email is already registered. Please log in instead.",
+          };
+        }
+
+        // Check for rate limit error
+        if (
+          error.message.includes("40 seconds") ||
+          error.message.includes("rate limit")
+        ) {
+          return {
+            error: true,
+            msg: "Please wait a moment before trying again. Check your email for the verification code.",
           };
         }
 
@@ -194,10 +214,183 @@ export const AuthProvider = ({ children }: any) => {
     }
   };
 
+  const resetPassword = async (email: string) => {
+    try {
+      // Send OTP (one-time password) code instead of email link
+      const { data, error } = await supabase.auth.signInWithOtp({
+        email: email,
+        options: {
+          shouldCreateUser: false, // Don't create new user, only allow existing users
+        },
+      });
+
+      if (error) {
+        console.error("Password reset error:", error);
+        return { error: true, msg: error.message };
+      }
+
+      return {
+        error: false,
+        msg: "Verification code sent to your email",
+        data,
+      };
+    } catch (error: any) {
+      console.error("Password reset exception:", error);
+      return {
+        error: true,
+        msg: error.message || "Failed to send verification code",
+      };
+    }
+  };
+
+  const verifyOtpAndUpdatePassword = async (
+    email: string,
+    token: string,
+    newPassword: string
+  ) => {
+    try {
+      // First, verify the OTP
+      const { data: verifyData, error: verifyError } =
+        await supabase.auth.verifyOtp({
+          email: email,
+          token: token,
+          type: "email",
+        });
+
+      if (verifyError) {
+        console.error("OTP verification error:", verifyError);
+        return { error: true, msg: verifyError.message };
+      }
+
+      // If verification successful, update the password
+      const { data: updateData, error: updateError } =
+        await supabase.auth.updateUser({
+          password: newPassword,
+        });
+
+      if (updateError) {
+        console.error("Password update error:", updateError);
+        return { error: true, msg: updateError.message };
+      }
+
+      // Sign out after password update
+      await supabase.auth.signOut();
+
+      return {
+        error: false,
+        msg: "Password updated successfully",
+        data: updateData,
+      };
+    } catch (error: any) {
+      console.error("Verify and update exception:", error);
+      return {
+        error: true,
+        msg: error.message || "Failed to update password",
+      };
+    }
+  };
+
+  const sendVerificationCode = async (email: string) => {
+    try {
+      // For new registrations, we can't use OTP without creating user first
+      // Instead, return success to proceed to next step
+      // The actual account will be created in verifyEmailWithOtp
+      return {
+        error: false,
+        msg: "Ready to create account",
+        data: null,
+      };
+    } catch (error: any) {
+      console.error("Send verification code exception:", error);
+      return {
+        error: true,
+        msg: error.message || "Failed to send verification code",
+      };
+    }
+  };
+
+  const verifyEmailWithOtp = async (
+    email: string,
+    token: string,
+    name: string,
+    password: string
+  ) => {
+    try {
+      // Create the account directly with email confirmation disabled
+      // Since we're manually verifying with a code, we'll use signUp
+      const { data: signUpData, error: signUpError } =
+        await supabase.auth.signUp({
+          email,
+          password,
+          options: {
+            data: {
+              display_name: name,
+            },
+            // Let Supabase handle email confirmation
+          },
+        });
+
+      if (signUpError) {
+        console.error("Sign up error:", signUpError);
+        return { error: true, msg: signUpError.message };
+      }
+
+      // Check if email confirmation is required
+      if (signUpData.user && !signUpData.session) {
+        // User created but needs email confirmation
+        // Try to verify with the provided token
+        const { data: verifyData, error: verifyError } =
+          await supabase.auth.verifyOtp({
+            email: email,
+            token: token,
+            type: "signup",
+          });
+
+        if (verifyError) {
+          console.error("OTP verification error:", verifyError);
+          return {
+            error: true,
+            msg: "Invalid verification code. Please check your email and try again.",
+          };
+        }
+
+        // Sign out after verification
+        await supabase.auth.signOut();
+
+        return {
+          error: false,
+          msg: "Email verified! You can now log in.",
+          data: verifyData,
+        };
+      }
+
+      // If session exists, user is auto-logged in (email confirmation disabled)
+      if (signUpData.session) {
+        await supabase.auth.signOut();
+      }
+
+      return {
+        error: false,
+        msg: "Registration successful! You can now log in.",
+        data: signUpData,
+      };
+    } catch (error: any) {
+      console.error("Verify email with OTP exception:", error);
+      return {
+        error: true,
+        msg: error.message || "Failed to verify email",
+      };
+    }
+  };
+
   const value = {
     onRegister: register,
     onLogin: login,
     onLogout: logout,
+    onResetPassword: resetPassword,
+    onVerifyOtpAndUpdatePassword: verifyOtpAndUpdatePassword,
+    onSendVerificationCode: sendVerificationCode,
+    onVerifyEmailWithOtp: verifyEmailWithOtp,
     authState,
   };
 

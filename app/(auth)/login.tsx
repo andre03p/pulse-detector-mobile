@@ -31,7 +31,6 @@ export default function Login() {
     const trimmedEmail = email.trim();
     const trimmedPassword = password.trim();
 
-    // Validation
     if (!trimmedEmail || !trimmedPassword) {
       Alert.alert("Error", "Please fill in all fields");
       return;
@@ -49,13 +48,10 @@ export default function Login() {
 
       if (result && !result.error) {
         console.log("Login successful");
-        // Navigate to home after successful login
         router.replace("/(tabs)/home" as any);
       } else {
-        // Handle specific error messages
         let errorMessage = result?.msg || "Login failed";
 
-        // Provide user-friendly error messages
         if (errorMessage.includes("Invalid login credentials")) {
           errorMessage = "Invalid email or password. Please try again.";
         } else if (errorMessage.includes("Email not confirmed")) {

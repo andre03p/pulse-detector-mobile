@@ -1,5 +1,5 @@
 import { LinearGradient } from "expo-linear-gradient";
-import { Link, router } from "expo-router";
+import { router, useLocalSearchParams } from "expo-router";
 import React, { useState } from "react";
 import {
   ActivityIndicator,
@@ -15,33 +15,24 @@ import {
 } from "react-native";
 import { useAuth } from "../../context/AuthContext";
 
-export default function Register() {
-  const [email, setEmail] = useState("");
+export default function UpdatePassword() {
+  const params = useLocalSearchParams();
+  const email = params.email as string;
+
+  const [verificationCode, setVerificationCode] = useState("");
   const [password, setPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
-  const [name, setName] = useState("");
   const [loading, setLoading] = useState(false);
-  const { onSendVerificationCode } = useAuth();
+  const { onVerifyOtpAndUpdatePassword } = useAuth();
 
-  const validateEmail = (email: string) => {
-    const emailRegex = /^[\w-\.]+@([\w-]+\.)+[\w-]{2,4}$/;
-    return emailRegex.test(email);
-  };
-
-  const handleRegister = async () => {
-    // Validation
-    if (!name || !email || !password || !confirmPassword) {
+  const handleUpdatePassword = async () => {
+    if (!verificationCode || !password || !confirmPassword) {
       Alert.alert("Error", "Please fill in all fields");
       return;
     }
 
-    if (!validateEmail(email.trim())) {
-      Alert.alert("Error", "Please enter a valid email address");
-      return;
-    }
-
-    if (password !== confirmPassword) {
-      Alert.alert("Error", "Passwords do not match");
+    if (verificationCode.length !== 6) {
+      Alert.alert("Error", "Verification code must be 6 digits");
       return;
     }
 
@@ -50,23 +41,46 @@ export default function Register() {
       return;
     }
 
+    if (password !== confirmPassword) {
+      Alert.alert("Error", "Passwords do not match");
+      return;
+    }
+
+    if (!email) {
+      Alert.alert("Error", "Email is required. Please go back and try again.");
+      return;
+    }
+
     setLoading(true);
 
     try {
-      // Navigate directly to verification screen
-      // The account will be created when they verify the code
-      router.push({
-        pathname: "/(auth)/verify-email" as any,
-        params: {
-          email: email.trim(),
-          name: name.trim(),
-          password: password,
-        },
-      });
-      console.log("Proceeding to verification");
+      const result = await onVerifyOtpAndUpdatePassword!(
+        email,
+        verificationCode,
+        password
+      );
+
+      if (result && !result.error) {
+        Alert.alert(
+          "Success",
+          "Password updated successfully! Please log in with your new password.",
+          [
+            {
+              text: "OK",
+              onPress: () => router.replace("/(auth)/login"),
+            },
+          ]
+        );
+      } else {
+        Alert.alert(
+          "Error",
+          result?.msg ||
+            "Invalid verification code or failed to update password"
+        );
+      }
     } catch (error: any) {
-      console.error("Registration error:", error);
-      Alert.alert("Error", error.message || "An unexpected error occurred");
+      console.error("Password update exception:", error);
+      Alert.alert("Error", error.message || "Failed to update password");
     } finally {
       setLoading(false);
     }
@@ -86,51 +100,42 @@ export default function Register() {
           keyboardShouldPersistTaps="handled"
         >
           <View style={styles.header}>
-            <Text style={styles.title}>Create Account</Text>
+            <Text style={styles.title}>Update Password</Text>
             <Text style={styles.subtitle}>
-              Sign up to start tracking your heart health
+              Enter the 6-digit code sent to {email}
             </Text>
           </View>
 
           <View style={styles.form}>
             <View style={styles.inputContainer}>
-              <Text style={styles.label}>Username</Text>
+              <Text style={styles.label}>Verification Code</Text>
               <TextInput
                 style={styles.input}
-                placeholder="Enter your name"
+                placeholder="Enter 6-digit code"
                 placeholderTextColor="#748cab"
-                value={name}
-                onChangeText={setName}
-                autoCapitalize="words"
+                value={verificationCode}
+                onChangeText={(text) =>
+                  setVerificationCode(text.replace(/[^0-9]/g, ""))
+                }
+                keyboardType="number-pad"
+                maxLength={6}
                 editable={!loading}
+                autoCorrect={false}
               />
             </View>
 
             <View style={styles.inputContainer}>
-              <Text style={styles.label}>Email</Text>
+              <Text style={styles.label}>New Password</Text>
               <TextInput
                 style={styles.input}
-                placeholder="Enter your email"
-                placeholderTextColor="#748cab"
-                value={email}
-                onChangeText={setEmail}
-                autoCapitalize="none"
-                keyboardType="email-address"
-                editable={!loading}
-              />
-            </View>
-
-            <View style={styles.inputContainer}>
-              <Text style={styles.label}>Password</Text>
-              <TextInput
-                style={styles.input}
-                placeholder="Create a password (min. 8 characters)"
+                placeholder="Enter new password (min 8 characters)"
                 placeholderTextColor="#748cab"
                 value={password}
                 onChangeText={setPassword}
-                secureTextEntry={true}
+                secureTextEntry
                 autoCapitalize="none"
                 editable={!loading}
+                autoCorrect={false}
               />
             </View>
 
@@ -138,19 +143,20 @@ export default function Register() {
               <Text style={styles.label}>Confirm Password</Text>
               <TextInput
                 style={styles.input}
-                placeholder="Confirm your password"
+                placeholder="Confirm new password"
                 placeholderTextColor="#748cab"
                 value={confirmPassword}
                 onChangeText={setConfirmPassword}
-                secureTextEntry={true}
+                secureTextEntry
                 autoCapitalize="none"
                 editable={!loading}
+                autoCorrect={false}
               />
             </View>
 
             <TouchableOpacity
               style={[loading && styles.buttonDisabled]}
-              onPress={handleRegister}
+              onPress={handleUpdatePassword}
               disabled={loading}
             >
               <LinearGradient
@@ -162,19 +168,18 @@ export default function Register() {
                 {loading ? (
                   <ActivityIndicator color="#f0ebd8" />
                 ) : (
-                  <Text style={styles.buttonText}>Continue</Text>
+                  <Text style={styles.buttonText}>Update Password</Text>
                 )}
               </LinearGradient>
             </TouchableOpacity>
-          </View>
 
-          <View style={styles.footer}>
-            <Text style={styles.footerText}>Already have an account? </Text>
-            <Link href="/(auth)/login" asChild>
-              <TouchableOpacity>
-                <Text style={styles.linkText}>Sign In</Text>
-              </TouchableOpacity>
-            </Link>
+            <TouchableOpacity
+              onPress={() => router.back()}
+              disabled={loading}
+              style={styles.backButton}
+            >
+              <Text style={styles.backButtonText}>Back to Reset Password</Text>
+            </TouchableOpacity>
           </View>
         </ScrollView>
       </KeyboardAvoidingView>
@@ -185,6 +190,16 @@ export default function Register() {
 const styles = StyleSheet.create({
   gradient: {
     flex: 1,
+  },
+  loadingContainer: {
+    flex: 1,
+    justifyContent: "center",
+    alignItems: "center",
+  },
+  loadingText: {
+    color: "#748cab",
+    fontSize: 16,
+    marginTop: 16,
   },
   container: {
     flex: 1,
@@ -209,8 +224,9 @@ const styles = StyleSheet.create({
   },
   subtitle: {
     fontSize: 16,
-    color: "#3e5c76",
+    color: "#748cab",
     textAlign: "center",
+    paddingHorizontal: 20,
   },
   form: {
     width: "100%",
@@ -259,18 +275,13 @@ const styles = StyleSheet.create({
     fontSize: 18,
     fontWeight: "bold",
   },
-  footer: {
-    flexDirection: "row",
-    marginTop: 32,
+  backButton: {
+    marginTop: 20,
     alignItems: "center",
   },
-  footerText: {
-    fontSize: 16,
+  backButtonText: {
     color: "#748cab",
-  },
-  linkText: {
     fontSize: 16,
-    color: "#f0ebd8",
-    fontWeight: "bold",
+    textDecorationLine: "underline",
   },
 });
