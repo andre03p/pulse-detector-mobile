@@ -44,7 +44,6 @@ export default function ResetPass() {
       const result = await onResetPassword!(trimmedEmail);
 
       if (result && !result.error) {
-        // Navigate to update password screen with email
         router.push({
           pathname: "/(auth)/update-pass",
           params: { email: trimmedEmail },

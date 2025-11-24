@@ -54,10 +54,17 @@ export default function Footer() {
     }
   };
 
+  // helper: remove route-group segments like "/(tabs)"
+  const normalizeHref = (href: string) =>
+    href.replace(/\(.*?\)/g, "").replace(/\/\/+/g, "/");
+
   return (
     <View style={[styles.container, { paddingBottom: insets.bottom || 12 }]}>
       {menu.map((item) => {
-        const isActive = pathname === item.href;
+        const normalized = normalizeHref(item.href);
+        const isActive =
+          pathname === normalized || pathname?.startsWith(normalized + "/");
+
         return (
           <TouchableOpacity
             key={item.name}
@@ -91,7 +98,7 @@ export default function Footer() {
 const styles = StyleSheet.create({
   container: {
     position: "absolute",
-    bottom: 0,
+    bottom: 4,
     left: 0,
     right: 0,
     flexDirection: "row",
@@ -115,8 +122,8 @@ const styles = StyleSheet.create({
   iconContainerActive: {
     backgroundColor: "#3e5c76",
     borderRadius: 24,
-    width: 48,
-    height: 48,
+    width: 34,
+    height: 34,
   },
   label: {
     fontSize: 11,

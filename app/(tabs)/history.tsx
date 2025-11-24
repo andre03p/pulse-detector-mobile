@@ -1,49 +1,90 @@
 import { useAuth } from "@/context/AuthContext";
-import React, { useEffect, useState } from "react";
-import { useSafeAreaInsets } from "react-native-safe-area-context";
-
+import { deleteMeasurement, fetchMeasurements } from "@/lib/supabaseQueries";
+import Ionicons from "@expo/vector-icons/Ionicons";
+import MaterialIcons from "@expo/vector-icons/MaterialIcons";
+import { useFocusEffect } from "@react-navigation/native";
 import { LinearGradient } from "expo-linear-gradient";
+import React, { useCallback, useEffect, useState } from "react";
 import {
+  ActivityIndicator,
+  Alert,
   ScrollView,
   StyleSheet,
   Text,
   TouchableOpacity,
   View,
 } from "react-native";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
 
-// Example data structure - replace with your actual data from Supabase
 interface HistoryItem {
-  id: string;
-  date: string;
-  bpm: number;
-  time: string;
+  id: number;
+  created_at: string;
+  heartRate: number;
+  timeStamp: string;
+  userId: number;
 }
 
 export default function History() {
   const { authState } = useAuth();
   const [history, setHistory] = useState<HistoryItem[]>([]);
+  const [isLoading, setIsLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
   const insets = useSafeAreaInsets();
 
-  useEffect(() => {
-    // TODO: Fetch actual history from Supabase
-    // Example:
-    // const fetchHistory = async () => {
-    //   const { data, error } = await supabase
-    //     .from('heart_rate_readings')
-    //     .select('*')
-    //     .order('created_at', { ascending: false });
-    //   if (data) setHistory(data);
-    // };
-    // fetchHistory();
+  const loadHistory = async () => {
+    try {
+      const { data, error } = await fetchMeasurements();
 
-    // Mock data for now
-    setHistory([
-      { id: "1", date: "2025-11-08", bpm: 72, time: "09:30 AM" },
-      { id: "2", date: "2025-11-07", bpm: 68, time: "02:15 PM" },
-      { id: "3", date: "2025-11-07", bpm: 75, time: "08:45 AM" },
-      { id: "4", date: "2025-11-06", bpm: 70, time: "11:20 AM" },
-    ]);
+      if (error) {
+        Alert.alert("Error", "Failed to load history. Please try again.");
+        console.error("Error fetching measurements:", error);
+      } else if (data) {
+        setHistory(data);
+      }
+    } catch (error) {
+      console.error("Error loading history:", error);
+      Alert.alert("Error", "Failed to load history. Please try again.");
+    } finally {
+      setIsLoading(false);
+      setRefreshing(false);
+    }
+  };
+
+  useEffect(() => {
+    loadHistory();
   }, []);
+
+  useFocusEffect(
+    useCallback(() => {
+      loadHistory();
+    }, [])
+  );
+
+  const handleDelete = async (id: number) => {
+    Alert.alert(
+      "Delete Measurement",
+      "Are you sure you want to delete this measurement?",
+      [
+        {
+          text: "Cancel",
+          style: "cancel",
+        },
+        {
+          text: "Delete",
+          style: "destructive",
+          onPress: async () => {
+            const { error } = await deleteMeasurement(id);
+            if (error) {
+              Alert.alert("Error", "Failed to delete measurement.");
+            } else {
+              // Refresh the list
+              loadHistory();
+            }
+          },
+        },
+      ]
+    );
+  };
 
   const getBpmColor = (bpm: number) => {
     if (bpm < 60) return "#748cab"; // Low
@@ -51,7 +92,38 @@ export default function History() {
     return "#3e5c76"; // Normal
   };
 
+  const formatDate = (dateString: string) => {
+    const date = new Date(dateString);
+    return date.toLocaleDateString("en-US", {
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+    });
+  };
+
+  const formatTime = (dateString: string) => {
+    const date = new Date(dateString);
+    return date.toLocaleTimeString("en-US", {
+      hour: "2-digit",
+      minute: "2-digit",
+    });
+  };
+
   const footerHeight = 80 + (insets.bottom || 12);
+
+  if (isLoading) {
+    return (
+      <View
+        style={[
+          styles.container,
+          { justifyContent: "center", alignItems: "center" },
+        ]}
+      >
+        <ActivityIndicator size="large" color="#748cab" />
+        <Text style={styles.loadingText}>Loading history...</Text>
+      </View>
+    );
+  }
 
   return (
     <View style={[styles.container, { paddingBottom: footerHeight }]}>
@@ -66,7 +138,9 @@ export default function History() {
       <ScrollView style={styles.scrollView}>
         {history.length === 0 ? (
           <View style={styles.emptyState}>
-            <Text style={styles.emptyIcon}>📊</Text>
+            <Text style={styles.emptyIcon}>
+              <Ionicons name="stats-chart-outline" size={24} color="#f0ebd8" />
+            </Text>
             <Text style={styles.emptyTitle}>No readings yet</Text>
             <Text style={styles.emptySubtitle}>
               Start monitoring your heart rate to see your history
@@ -74,28 +148,40 @@ export default function History() {
           </View>
         ) : (
           history.map((item) => (
-            <TouchableOpacity key={item.id} style={styles.historyCard}>
+            <View key={item.id} style={styles.historyCard}>
               <View style={styles.cardLeft}>
-                <Text style={styles.cardDate}>{item.date}</Text>
-                <Text style={styles.cardTime}>{item.time}</Text>
+                <Text style={styles.cardDate}>
+                  {formatDate(item.created_at)}
+                </Text>
+                <Text style={styles.cardTime}>
+                  {formatTime(item.created_at)}
+                </Text>
               </View>
               <View
                 style={[
                   styles.bpmBadge,
-                  { backgroundColor: getBpmColor(item.bpm) },
+                  { backgroundColor: getBpmColor(item.heartRate) },
                 ]}
               >
-                <Text style={styles.bpmValue}>{item.bpm}</Text>
+                <Text style={styles.bpmValue}>{item.heartRate}</Text>
                 <Text style={styles.bpmLabel}>BPM</Text>
               </View>
-            </TouchableOpacity>
+              <TouchableOpacity
+                onPress={() => handleDelete(item.id)}
+                style={styles.deleteButton}
+              >
+                <Text style={styles.deleteButtonText}>
+                  <MaterialIcons
+                    name="delete-forever"
+                    size={24}
+                    color="#f0ebd8"
+                  />
+                </Text>
+              </TouchableOpacity>
+            </View>
           ))
         )}
       </ScrollView>
-
-      <TouchableOpacity style={styles.exportButton}>
-        <Text style={styles.exportButtonText}>Export History</Text>
-      </TouchableOpacity>
     </View>
   );
 }
@@ -118,10 +204,12 @@ const styles = StyleSheet.create({
     color: "#f0ebd8",
     marginBottom: 4,
     marginTop: 4,
+    textAlign: "center",
   },
   subtitle: {
     fontSize: 14,
     color: "#748cab",
+    textAlign: "center",
   },
   scrollView: {
     flex: 1,
@@ -176,6 +264,15 @@ const styles = StyleSheet.create({
     color: "#f0ebd8",
     marginTop: 2,
   },
+  deleteButton: {
+    marginLeft: 12,
+    padding: 8,
+    justifyContent: "center",
+    alignItems: "center",
+  },
+  deleteButtonText: {
+    fontSize: 24,
+  },
   emptyState: {
     flex: 1,
     alignItems: "center",
@@ -198,24 +295,9 @@ const styles = StyleSheet.create({
     textAlign: "center",
     paddingHorizontal: 40,
   },
-  exportButton: {
-    backgroundColor: "#3e5c76",
-    borderRadius: 12,
-    padding: 16,
-    margin: 16,
-    alignItems: "center",
-    shadowColor: "#0d1321",
-    shadowOffset: {
-      width: 0,
-      height: 2,
-    },
-    shadowOpacity: 0.25,
-    shadowRadius: 3.84,
-    elevation: 5,
-  },
-  exportButtonText: {
-    color: "#f0ebd8",
+  loadingText: {
     fontSize: 16,
-    fontWeight: "bold",
+    color: "#748cab",
+    marginTop: 16,
   },
 });

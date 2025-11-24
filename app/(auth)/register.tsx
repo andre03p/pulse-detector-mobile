@@ -29,7 +29,6 @@ export default function Register() {
   };
 
   const handleRegister = async () => {
-    // Validation
     if (!name || !email || !password || !confirmPassword) {
       Alert.alert("Error", "Please fill in all fields");
       return;
@@ -53,8 +52,6 @@ export default function Register() {
     setLoading(true);
 
     try {
-      // Navigate directly to verification screen
-      // The account will be created when they verify the code
       router.push({
         pathname: "/(auth)/verify-email" as any,
         params: {

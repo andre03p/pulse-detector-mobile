@@ -1,9 +1,19 @@
 import { useAuth } from "@/context/AuthContext";
-import Feather from "@expo/vector-icons/Feather";
+import { getHeartRateStats } from "@/lib/supabaseQueries";
+import Foundation from "@expo/vector-icons/Foundation";
 import Ionicons from "@expo/vector-icons/Ionicons";
+import { useFocusEffect } from "@react-navigation/native";
 import { LinearGradient } from "expo-linear-gradient";
-import React, { useEffect, useState } from "react";
-import { Dimensions, ScrollView, StyleSheet, Text, View } from "react-native";
+
+import React, { useCallback, useEffect, useState } from "react";
+import {
+  ActivityIndicator,
+  Dimensions,
+  ScrollView,
+  StyleSheet,
+  Text,
+  View,
+} from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 const { width } = Dimensions.get("window");
@@ -11,22 +21,81 @@ const { width } = Dimensions.get("window");
 export default function Stats() {
   const { authState } = useAuth();
   const insets = useSafeAreaInsets();
+  const [isLoading, setIsLoading] = useState(true);
 
   const [stats, setStats] = useState({
-    avgBpm: 72,
-    minBpm: 58,
-    maxBpm: 95,
-    totalReadings: 45,
-    weeklyReadings: 12,
-    restingBpm: 68,
+    avgBpm: 0,
+    minBpm: 0,
+    maxBpm: 0,
+    totalReadings: 0,
+    weeklyReadings: 0,
   });
 
+  const loadStats = async () => {
+    try {
+      const { data, error } = await getHeartRateStats();
+
+      if (error) {
+        console.error("Error fetching stats:", error);
+      } else if (data) {
+        setStats(data);
+      }
+    } catch (error) {
+      console.error("Error loading stats:", error);
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
   useEffect(() => {
-    // TODO: Fetch actual stats from Supabase
-    // Calculate averages, min/max from your database
+    loadStats();
   }, []);
 
+  useFocusEffect(
+    useCallback(() => {
+      loadStats();
+    }, [])
+  );
+
+  const handleHeartRate = () => {
+    if (stats.avgBpm < 60) {
+      return "Your average heart rate is quite low, indicating good cardiovascular fitness.";
+    } else if (stats.avgBpm <= 100) {
+      return "Your average heart rate is within the normal resting range.";
+    } else if (stats.avgBpm <= 130) {
+      return "Your average heart rate suggests light to moderate activity levels.";
+    } else if (stats.avgBpm <= 150) {
+      return "Your average heart rate indicates moderate to high activity levels.";
+    } else {
+      return "Your average heart rate is quite high; consider consulting a healthcare professional.";
+    }
+  };
+
+  const handleReadingsConsistency = () => {
+    if (stats.weeklyReadings >= 5) {
+      return "Great job! You're consistently monitoring your heart rate.";
+    } else if (stats.weeklyReadings >= 3) {
+      return "Good effort! Try to monitor your heart rate a bit more regularly.";
+    } else {
+      return "Consider monitoring your heart rate more frequently for better insights.";
+    }
+  };
+
   const footerHeight = 80 + (insets.bottom || 12);
+
+  if (isLoading) {
+    return (
+      <View
+        style={[
+          styles.container,
+          { justifyContent: "center", alignItems: "center" },
+        ]}
+      >
+        <ActivityIndicator size="large" color="#748cab" />
+        <Text style={styles.loadingText}>Loading statistics...</Text>
+      </View>
+    );
+  }
 
   const bpmZones = [
     { label: "Below 60", description: "Resting (Athletic)", color: "#748cab" },
@@ -81,7 +150,7 @@ export default function Stats() {
         {/* Grid Stats */}
         <View style={styles.gridContainer}>
           <View style={styles.gridCard}>
-            <Feather name="bar-chart-2" size={24} color="#f0ebd8" />
+            <Ionicons name="stats-chart-outline" size={24} color="#f0ebd8" />
             <Text style={styles.gridValue}>{stats.totalReadings}</Text>
             <Text style={styles.gridLabel}>Total Readings</Text>
           </View>
@@ -95,17 +164,18 @@ export default function Stats() {
 
         {/* Insights Card */}
         <View style={styles.insightsCard}>
-          <Text style={styles.insightsTitle}>💡 Insights</Text>
+          <Text style={styles.insightsTitle}>
+            <Foundation name="lightbulb" size={20} color="#f0ebd8" />
+            Insights
+          </Text>
           <View style={styles.insightItem}>
             <View style={styles.insightDot} />
-            <Text style={styles.insightText}>
-              Your average heart rate is within the normal range
-            </Text>
+            <Text style={styles.insightText}>{handleHeartRate()}</Text>
           </View>
           <View style={styles.insightItem}>
             <View style={styles.insightDot} />
             <Text style={styles.insightText}>
-              You've been consistent with monitoring this week
+              {handleReadingsConsistency()}
             </Text>
           </View>
           <View style={styles.insightItem}>
@@ -167,10 +237,12 @@ const styles = StyleSheet.create({
     color: "#f0ebd8",
     marginBottom: 4,
     marginTop: 4,
+    textAlign: "center",
   },
   subtitle: {
     fontSize: 14,
     color: "#748cab",
+    textAlign: "center",
   },
   content: {
     padding: 16,
@@ -349,5 +421,10 @@ const styles = StyleSheet.create({
     color: "#fbf7f7ff",
     flex: 1,
     textAlign: "right", // Aligns description to the right
+  },
+  loadingText: {
+    fontSize: 16,
+    color: "#748cab",
+    marginTop: 16,
   },
 });

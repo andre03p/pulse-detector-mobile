@@ -2,6 +2,7 @@ import Entypo from "@expo/vector-icons/Entypo";
 import { LinearGradient } from "expo-linear-gradient";
 import { router, useLocalSearchParams } from "expo-router";
 import React, { useState } from "react";
+
 import {
   ActivityIndicator,
   Alert,
@@ -225,7 +226,8 @@ export default function VerifyEmail() {
 
           <View style={styles.infoBox}>
             <Text style={styles.infoText}>
-              💡 Tip: Check your spam folder if you don't see the email
+              <Entypo name="light-bulb" size={16} color="white" />
+              Tip: Check your spam folder if you don't see the email
             </Text>
           </View>
         </ScrollView>

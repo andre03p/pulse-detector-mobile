@@ -1,6 +1,7 @@
 import { User } from "@supabase/supabase-js";
 import { createContext, useContext, useEffect, useState } from "react";
 import { supabase } from "../lib/supabase";
+import { createUserProfile } from "../lib/supabaseQueries";
 
 interface AuthProps {
   authState?: {
@@ -104,7 +105,6 @@ export const AuthProvider = ({ children }: any) => {
 
   const register = async (name: string, email: string, password: string) => {
     try {
-      // First, check if user already exists
       const { data: existingUsers, error: checkError } = await supabase.rpc(
         "check_user_exists",
         { email_input: email }
@@ -153,6 +153,11 @@ export const AuthProvider = ({ children }: any) => {
           error: true,
           msg: "This email is already registered. Please log in instead.",
         };
+      }
+
+      // Create user profile in User table
+      if (data.user?.id && data.user?.email) {
+        await createUserProfile(data.user.id, data.user.email, name);
       }
 
       // Successful registration

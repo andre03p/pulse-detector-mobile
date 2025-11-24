@@ -1,14 +1,33 @@
+import HeartRateMonitor from "@/components/HeartRateMonitor";
 import { useAuth } from "@/context/AuthContext";
+import { fetchMeasurements } from "@/lib/supabaseQueries";
 import Entypo from "@expo/vector-icons/Entypo";
+import { useFocusEffect } from "@react-navigation/native";
 import { LinearGradient } from "expo-linear-gradient";
-import React, { useEffect, useState } from "react";
-import { StyleSheet, Text, TouchableOpacity, View } from "react-native";
+import React, { useCallback, useEffect, useState } from "react";
+import { Modal, StyleSheet, Text, TouchableOpacity, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 export default function Home() {
   const { authState } = useAuth();
   const [greeting, setGreeting] = useState("Welcome");
+  const [showMonitor, setShowMonitor] = useState(false);
+  const [latestBPM, setLatestBPM] = useState<number | null>(null);
+  const [totalReadings, setTotalReadings] = useState<number>(0);
   const insets = useSafeAreaInsets();
+
+  const loadLatestMeasurement = async () => {
+    try {
+      const { data, error } = await fetchMeasurements();
+
+      if (!error && data && data.length > 0) {
+        setLatestBPM(data[0].heartRate);
+        setTotalReadings(data.length);
+      }
+    } catch (error) {
+      console.error("Error loading latest measurement:", error);
+    }
+  };
 
   useEffect(() => {
     const hour = new Date().getHours();
@@ -20,6 +39,12 @@ export default function Home() {
       setGreeting("Good Evening");
     }
   }, []);
+
+  useFocusEffect(
+    useCallback(() => {
+      loadLatestMeasurement();
+    }, [])
+  );
 
   const footerHeight = 80 + (insets.bottom || 12);
 
@@ -39,7 +64,7 @@ export default function Home() {
         <Text style={styles.title}>Monitor your heart rate</Text>
         <Text style={styles.subtitle}>track your pulse and stay healthy</Text>
 
-        <TouchableOpacity>
+        <TouchableOpacity onPress={() => setShowMonitor(true)}>
           <LinearGradient
             colors={["#3e5c76", "#748cab"]}
             start={{ x: 0, y: 0 }}
@@ -51,18 +76,46 @@ export default function Home() {
         </TouchableOpacity>
       </View>
 
+      <Modal
+        visible={showMonitor}
+        animationType="slide"
+        presentationStyle="fullScreen"
+        onRequestClose={() => {
+          setShowMonitor(false);
+          loadLatestMeasurement();
+        }}
+      >
+        <View style={styles.modalContainer}>
+          <View style={styles.modalHeader}>
+            <TouchableOpacity
+              onPress={() => {
+                setShowMonitor(false);
+                loadLatestMeasurement();
+              }}
+              style={styles.closeButton}
+            >
+              <Entypo name="cross" size={28} color="#f0ebd8" />
+            </TouchableOpacity>
+            <Text style={styles.modalTitle}>Heart Rate Monitor</Text>
+          </View>
+          <HeartRateMonitor />
+        </View>
+      </Modal>
+
       <View style={styles.bottomSection}>
         <View style={styles.infoCard}>
           <Text style={styles.infoTitle}>Quick Stats</Text>
           <View style={styles.statsRow}>
             <View style={styles.statItem}>
-              <Text style={styles.statValue}>--</Text>
-              <Text style={styles.statLabel}>BPM</Text>
+              <Text style={styles.statValue}>
+                {latestBPM !== null ? latestBPM : "--"}
+              </Text>
+              <Text style={styles.statLabel}>Latest BPM</Text>
             </View>
             <View style={styles.statDivider} />
             <View style={styles.statItem}>
-              <Text style={styles.statValue}>--</Text>
-              <Text style={styles.statLabel}>Reading</Text>
+              <Text style={styles.statValue}>{totalReadings}</Text>
+              <Text style={styles.statLabel}>Total Readings</Text>
             </View>
           </View>
         </View>
@@ -150,6 +203,7 @@ const styles = StyleSheet.create({
     padding: 20,
     borderWidth: 2,
     borderColor: "#3e5c76",
+    marginBottom: 40,
   },
   infoTitle: {
     fontSize: 18,
@@ -184,5 +238,28 @@ const styles = StyleSheet.create({
   bottomSection: {
     paddingHorizontal: 20,
     paddingBottom: 30,
+    marginTop: 40,
+  },
+  modalContainer: {
+    flex: 1,
+    backgroundColor: "#1d2d44",
+  },
+  modalHeader: {
+    flexDirection: "row",
+    alignItems: "center",
+    padding: 16,
+    paddingTop: 50,
+    backgroundColor: "#0d1321",
+    borderBottomWidth: 1,
+    borderBottomColor: "#3e5c76",
+  },
+  closeButton: {
+    padding: 8,
+    marginRight: 12,
+  },
+  modalTitle: {
+    fontSize: 20,
+    fontWeight: "bold",
+    color: "#f0ebd8",
   },
 });

@@ -1,45 +1,145 @@
 import { supabase } from "@/lib/supabase";
-import { getCurrentUser } from "@/lib/supabaseHelpers";
+
+const getCurrentUser = async () => {
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
+  return user;
+};
+
+export const createUserProfile = async (
+  authUuid: string,
+  email: string,
+  name?: string
+) => {
+  try {
+    const { data: existing } = await supabase
+      .from("User")
+      .select("id")
+      .eq("auth_uuid", authUuid)
+      .maybeSingle();
+
+    if (existing) {
+      return { data: existing, error: null };
+    }
+
+    // Create new user profile with auth_uuid (no password - managed by Supabase Auth)
+    const { data, error } = await supabase
+      .from("User")
+      .insert({
+        auth_uuid: authUuid,
+        email: email,
+        name: name || email.split("@")[0],
+      })
+      .select("id")
+      .single();
+
+    if (error) {
+      console.error("Error creating user profile:", error);
+      return { data: null, error };
+    }
+
+    return { data, error: null };
+  } catch (error) {
+    console.error("Exception creating user profile:", error);
+    return { data: null, error };
+  }
+};
+
+const getUserId = async (): Promise<number | null> => {
+  const authUser = await getCurrentUser();
+  if (!authUser) return null;
+
+  const { data, error } = await supabase
+    .from("User")
+    .select("id")
+    .eq("auth_uuid", authUser.id)
+    .maybeSingle();
+
+  if (!data) {
+    console.log("User profile not found, creating...");
+    const { data: newUser, error: createError } = await createUserProfile(
+      authUser.id,
+      authUser.email || "",
+      authUser.user_metadata?.display_name
+    );
+
+    if (createError || !newUser) {
+      console.error("Error creating user profile:", createError);
+      return null;
+    }
+
+    return newUser.id;
+  }
+
+  if (error) {
+    console.error("Error fetching user ID:", error);
+    return null;
+  }
+
+  return data.id;
+};
 
 export const fetchMeasurements = async () => {
-  const user = await getCurrentUser();
-  if (!user) return { data: null, error: { message: "Not authenticated" } };
+  const userId = await getUserId();
+  if (!userId) return { data: null, error: { message: "Not authenticated" } };
 
   const { data, error } = await supabase
     .from("Measurement")
     .select("*")
-    .eq("userId", user.id)
+    .eq("userId", userId)
     .order("created_at", { ascending: false })
     .limit(50);
+
+  if (error) {
+    console.error("Error fetching measurements:", error);
+  }
 
   return { data, error };
 };
 
 export const addMeasurement = async (heartRate: number) => {
-  const user = await getCurrentUser();
-  if (!user) return { data: null, error: { message: "Not authenticated" } };
+  const userId = await getUserId();
+  if (!userId) {
+    console.error("Cannot add measurement: User not authenticated");
+    return { data: null, error: { message: "Not authenticated" } };
+  }
+
+  const timestamp = new Date().toISOString();
+
+  console.log("Saving measurement:", {
+    userId: userId,
+    heartRate,
+    timestamp,
+  });
 
   const { data, error } = await supabase
     .from("Measurement")
     .insert({
-      userId: user.id,
+      userId: userId,
       heartRate: heartRate,
-      timeStamp: new Date().toISOString(),
-      created_at: new Date().toISOString(),
+      timeStamp: timestamp,
+      created_at: timestamp,
     })
     .select();
+
+  if (error) {
+    console.error("Error saving measurement:", error);
+  } else {
+    console.log("Measurement saved successfully:", data);
+  }
 
   return { data, error };
 };
 
 export const getHeartRateStats = async () => {
-  const user = await getCurrentUser();
-  if (!user) return { data: null, error: { message: "Not authenticated" } };
+  const userId = await getUserId();
+  if (!userId) return { data: null, error: { message: "Not authenticated" } };
 
   const { data: readings, error } = await supabase
     .from("Measurement")
     .select("heartRate, created_at")
-    .eq("userId", user.id);
+    .eq("userId", userId);
 
   if (error || !readings || readings.length === 0) {
     return {
@@ -74,4 +174,27 @@ export const getHeartRateStats = async () => {
     },
     error: null,
   };
+};
+
+export const deleteMeasurement = async (measurementId: number) => {
+  const userId = await getUserId();
+  if (!userId) {
+    console.error("Cannot delete measurement: User not authenticated");
+    return { data: null, error: { message: "Not authenticated" } };
+  }
+
+  const { data, error } = await supabase
+    .from("Measurement")
+    .delete()
+    .eq("id", measurementId)
+    .eq("userId", userId)
+    .select();
+
+  if (error) {
+    console.error("Error deleting measurement:", error);
+  } else {
+    console.log("Measurement deleted successfully:", data);
+  }
+
+  return { data, error };
 };
