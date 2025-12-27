@@ -1,160 +1,210 @@
-// Heart Rate Detection Utilities
-// Based on photoplethysmography (PPG) principles
+export class ButterworthFilter {
+  private readonly b = [0.0722, 0, -0.1444, 0, 0.0722];
+  private readonly a = [1.0, -2.2872, 2.3805, -1.1895, 0.2782];
 
-export class BandPassFilter {
-  // Simple Moving Average based Bandpass Filter
-  // High Pass: Remove DC component (slow changes)
-  // Low Pass: Remove high frequency noise
-  private history: number[] = [];
-  private readonly historySize = 30; // 1 second at 30fps
+  private x = [0, 0, 0, 0, 0];
+  private y = [0, 0, 0, 0, 0];
 
-  processValue(value: number): number {
-    this.history.push(value);
-    if (this.history.length > this.historySize) {
-      this.history.shift();
+  constructor(fs: number) {}
+
+  process(input: number): number {
+    for (let i = 4; i > 0; i--) {
+      this.x[i] = this.x[i - 1];
+      this.y[i] = this.y[i - 1];
     }
+    this.x[0] = input;
 
-    // Calculate DC component (average of last 1 second)
-    const dc = this.history.reduce((a, b) => a + b, 0) / this.history.length;
+    this.y[0] =
+      this.b[0] * this.x[0] +
+      this.b[1] * this.x[1] +
+      this.b[2] * this.x[2] +
+      this.b[3] * this.x[3] +
+      this.b[4] * this.x[4] -
+      this.a[1] * this.y[1] -
+      this.a[2] * this.y[2] -
+      this.a[3] * this.y[3] -
+      this.a[4] * this.y[4];
 
-    // AC component = Value - DC
-    // Invert because higher blood volume = lower light intensity (absorption)
-    // But we want a positive peak for a heartbeat.
-    // So: (DC - Value) or -(Value - DC)
-    return dc - value;
+    return this.y[0];
   }
 
   reset() {
-    this.history = [];
+    this.x = [0, 0, 0, 0, 0];
+    this.y = [0, 0, 0, 0, 0];
   }
 }
 
-export class PulseDetector {
-  private lastPeakTime = 0;
-  private intervals: number[] = [];
-  private readonly maxIntervals = 10;
-  private lastVal = 0;
-  private currentTrend = 0; // 1 for up, -1 for down
-  private threshold = 0;
-  private signalHistory: number[] = [];
-  private readonly signalHistorySize = 30; // 1 second
+function refinePeak(correlations: number[], peakIndex: number): number {
+  if (peakIndex <= 0 || peakIndex >= correlations.length - 1) {
+    return peakIndex;
+  }
 
-  addNewValue(newVal: number, time: number): number {
-    // Keep a short history to determine dynamic threshold
-    this.signalHistory.push(Math.abs(newVal));
-    if (this.signalHistory.length > this.signalHistorySize) {
-      this.signalHistory.shift();
+  const y1 = correlations[peakIndex - 1];
+  const y2 = correlations[peakIndex];
+  const y3 = correlations[peakIndex + 1];
+
+  const denominator = y1 - 2 * y2 + y3;
+  if (Math.abs(denominator) < 1e-10) {
+    return peakIndex;
+  }
+
+  const offset = (0.5 * (y1 - y3)) / denominator;
+
+  return peakIndex + offset;
+}
+
+export function estimateHeartRateAutocorrelation(
+  signal: number[],
+  fs: number
+): number {
+  const mean = signal.reduce((a, b) => a + b, 0) / signal.length;
+  const normalized = signal.map((x) => x - mean);
+
+  let variance = 0;
+  for (let i = 0; i < normalized.length; i++) {
+    variance += normalized[i] * normalized[i];
+  }
+
+  if (variance < 1e-10) return 0;
+
+  const minLag = Math.floor(fs * (60 / 180));
+  const maxLag = Math.floor(fs * (60 / 50));
+
+  const correlations: number[] = [];
+  let maxCorr = -Infinity;
+  let bestLagIndex = 0;
+
+  for (let lag = minLag; lag <= maxLag; lag++) {
+    let sum = 0;
+    const n = normalized.length - lag;
+
+    for (let i = 0; i < n; i++) {
+      sum += normalized[i] * normalized[i + lag];
     }
 
-    // Dynamic threshold: 50% of max amplitude in recent history
-    const maxAmp = Math.max(...this.signalHistory);
-    this.threshold = maxAmp * 0.4;
+    const correlation = sum / variance;
+    correlations.push(correlation);
 
-    // Peak detection logic
-    // We look for a local maximum that is above the threshold
-    let isPeak = false;
-
-    if (newVal > this.lastVal && newVal > this.threshold) {
-      this.currentTrend = 1; // Going up
-    } else if (newVal < this.lastVal && this.currentTrend === 1) {
-      // Was going up, now going down -> Peak
-      if (this.lastVal > this.threshold) {
-        isPeak = true;
-      }
-      this.currentTrend = -1; // Going down
+    if (correlation > maxCorr) {
+      maxCorr = correlation;
+      bestLagIndex = lag - minLag;
     }
+  }
 
-    this.lastVal = newVal;
-
-    if (isPeak) {
-      const now = time;
-      if (this.lastPeakTime > 0) {
-        const interval = now - this.lastPeakTime;
-        // Filter invalid intervals (40-220 BPM => 0.27s - 1.5s)
-        if (interval > 0.27 && interval < 1.5) {
-          this.intervals.push(interval);
-          if (this.intervals.length > this.maxIntervals) {
-            this.intervals.shift();
-          }
-        }
-      }
-      this.lastPeakTime = now;
-      return 1; // Signal a peak
-    }
-
+  if (maxCorr < 0.15 || bestLagIndex === 0) {
     return 0;
   }
 
-  getAverage(): number {
-    if (this.intervals.length < 3) return -1;
+  const refinedLagOffset = refinePeak(correlations, bestLagIndex);
+  const refinedLag = minLag + refinedLagOffset;
 
-    // Calculate average interval
-    const sum = this.intervals.reduce((a, b) => a + b, 0);
-    const avgInterval = sum / this.intervals.length;
-
-    return avgInterval;
-  }
-
-  reset() {
-    this.lastPeakTime = 0;
-    this.intervals = [];
-    this.lastVal = 0;
-    this.currentTrend = 0;
-    this.signalHistory = [];
-  }
+  const periodSeconds = refinedLag / fs;
+  return 60 / periodSeconds;
 }
 
-// Convert RGB to HSV color space
-export function rgbToHsv(
-  r: number,
-  g: number,
-  b: number
-): { h: number; s: number; v: number } {
-  r /= 255;
-  g /= 255;
-  b /= 255;
+export function calculateSkewness(data: number[]): number {
+  const n = data.length;
+  if (n < 3) return 0;
 
-  const max = Math.max(r, g, b);
-  const min = Math.min(r, g, b);
-  const diff = max - min;
+  const mean = data.reduce((a, b) => a + b, 0) / n;
+  let m2 = 0;
+  let m3 = 0;
 
-  let h = 0;
-  const s = max === 0 ? 0 : diff / max;
-  const v = max;
+  for (let i = 0; i < n; i++) {
+    const diff = data[i] - mean;
+    m2 += diff * diff;
+    m3 += diff * diff * diff;
+  }
 
-  if (diff !== 0) {
-    if (max === r) {
-      h = ((g - b) / diff + (g < b ? 6 : 0)) / 6;
-    } else if (max === g) {
-      h = ((b - r) / diff + 2) / 6;
-    } else {
-      h = ((r - g) / diff + 4) / 6;
+  const variance = m2 / n;
+  const stdDev = Math.sqrt(variance);
+
+  const skewness = m3 / n / (stdDev * stdDev * stdDev);
+  return skewness;
+}
+
+export function assessSignalQuality(data: number[]): number {
+  const n = data.length;
+  if (n < 10) return 0;
+
+  const mean = data.reduce((a, b) => a + b, 0) / n;
+
+  let sumSquares = 0;
+  let maxVal = -Infinity;
+  let minVal = Infinity;
+
+  for (let i = 0; i < n; i++) {
+    sumSquares += (data[i] - mean) * (data[i] - mean);
+    maxVal = Math.max(maxVal, data[i]);
+    minVal = Math.min(minVal, data[i]);
+  }
+
+  const acComponent = Math.sqrt(sumSquares / n);
+  const dcComponent = Math.abs(mean);
+  const snr = dcComponent > 0 ? acComponent / dcComponent : 0;
+
+  const snrScore = snr > 0.001 && snr < 1.0 ? 1 : 0;
+
+  let m2 = 0,
+    m3 = 0;
+  for (let i = 0; i < n; i++) {
+    const diff = data[i] - mean;
+    m2 += diff * diff;
+    m3 += diff * diff * diff;
+  }
+  const variance = m2 / n;
+  const stdDev = Math.sqrt(variance);
+  const skewness = stdDev > 0 ? m3 / n / (stdDev * stdDev * stdDev) : 0;
+  const skewnessScore = Math.abs(skewness) > 0.2 ? 1 : 0;
+
+  const peakToPeak = maxVal - minVal;
+  const ppScore = peakToPeak > 1 ? 1 : 0;
+
+  const totalScore = snrScore + skewnessScore + ppScore;
+  return totalScore >= 1 ? 1 : 0;
+}
+
+export function median(values: number[]): number {
+  if (values.length === 0) return 0;
+  const sorted = [...values].sort((a, b) => a - b);
+  const mid = Math.floor(sorted.length / 2);
+  return sorted.length % 2 !== 0
+    ? sorted[mid]
+    : (sorted[mid - 1] + sorted[mid]) / 2;
+}
+
+export function weightedMedian(values: number[]): number {
+  if (values.length === 0) return 0;
+
+  const weighted: number[] = [];
+  for (let i = 0; i < values.length; i++) {
+    const weight = i + 1;
+    for (let w = 0; w < weight; w++) {
+      weighted.push(values[i]);
     }
   }
 
-  return { h, s, v };
+  return median(weighted);
 }
 
-// Calculate average color from image data
-export function calculateAverageColor(
-  imageData: Uint8Array,
-  width: number,
-  height: number
-): { r: number; g: number; b: number } {
-  let r = 0,
-    g = 0,
-    b = 0;
-  const pixels = width * height;
+export class KalmanFilter {
+  private x = 70;
+  private p = 10;
+  private readonly q = 0.5;
+  private readonly r = 5;
 
-  for (let i = 0; i < pixels * 4; i += 4) {
-    r += imageData[i];
-    g += imageData[i + 1];
-    b += imageData[i + 2];
+  update(measurement: number): number {
+    this.p = this.p + this.q;
+
+    const k = this.p / (this.p + this.r);
+    this.x = this.x + k * (measurement - this.x);
+    this.p = (1 - k) * this.p;
+
+    return this.x;
   }
 
-  return {
-    r: r / pixels,
-    g: g / pixels,
-    b: b / pixels,
-  };
+  reset() {
+    this.x = 70;
+    this.p = 10;
+  }
 }

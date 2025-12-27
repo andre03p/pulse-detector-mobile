@@ -123,7 +123,6 @@ export const AuthProvider = ({ children }: any) => {
       if (error) {
         console.error("Supabase signup error:", error);
 
-        // Check for specific error messages
         if (error.message.includes("already registered")) {
           return {
             error: true,
@@ -131,7 +130,6 @@ export const AuthProvider = ({ children }: any) => {
           };
         }
 
-        // Check for rate limit error
         if (
           error.message.includes("40 seconds") ||
           error.message.includes("rate limit")

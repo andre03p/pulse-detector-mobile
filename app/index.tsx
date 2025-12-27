@@ -6,7 +6,7 @@ export default function Index() {
   const { authState } = useAuth();
 
   // Show loading indicator while checking auth state
-  if (authState?.loading) {
+  if (authState?.token === undefined) {
     return (
       <View
         style={{
@@ -21,7 +21,6 @@ export default function Index() {
     );
   }
 
-  // Redirect based on authentication state
   if (authState?.authenticated) {
     return <Redirect href="/(tabs)/home" />;
   }

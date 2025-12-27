@@ -11,9 +11,9 @@ import {
   ScrollView,
   StyleSheet,
   Text,
-  TouchableOpacity,
   View,
 } from "react-native";
+import { Swipeable } from "react-native-gesture-handler";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 interface HistoryItem {
@@ -30,6 +30,24 @@ export default function History() {
   const [isLoading, setIsLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const insets = useSafeAreaInsets();
+
+  const renderRightActions = (id: number) => {
+    return (
+      <View style={styles.swipeActions}>
+        <View style={styles.swipeDeleteAction}>
+          <MaterialIcons
+            name="delete-forever"
+            size={28}
+            color="#f0ebd8"
+            onPress={() => handleDelete(id)}
+          />
+          <Text style={styles.swipeDeleteText} onPress={() => handleDelete(id)}>
+            Delete
+          </Text>
+        </View>
+      </View>
+    );
+  };
 
   const loadHistory = async () => {
     try {
@@ -84,12 +102,6 @@ export default function History() {
         },
       ]
     );
-  };
-
-  const getBpmColor = (bpm: number) => {
-    if (bpm < 60) return "#748cab"; // Low
-    if (bpm > 100) return "#d32f2f"; // High
-    return "#3e5c76"; // Normal
   };
 
   const formatDate = (dateString: string) => {
@@ -148,37 +160,31 @@ export default function History() {
           </View>
         ) : (
           history.map((item) => (
-            <View key={item.id} style={styles.historyCard}>
-              <View style={styles.cardLeft}>
-                <Text style={styles.cardDate}>
-                  {formatDate(item.created_at)}
-                </Text>
-                <Text style={styles.cardTime}>
-                  {formatTime(item.created_at)}
-                </Text>
+            <Swipeable
+              key={item.id}
+              overshootRight={false}
+              renderRightActions={() => renderRightActions(item.id)}
+            >
+              <View style={styles.historyCard}>
+                <View style={styles.cardLeft}>
+                  <Text style={styles.cardDate}>
+                    {formatDate(item.created_at)}
+                  </Text>
+                  <Text style={styles.cardTime}>
+                    {formatTime(item.created_at)}
+                  </Text>
+                </View>
+                <LinearGradient
+                  colors={["#3e5c76", "#748cab"]}
+                  start={{ x: 0, y: 0 }}
+                  end={{ x: 1, y: 1 }}
+                  style={styles.bpmBadge}
+                >
+                  <Text style={styles.bpmValue}>{item.heartRate}</Text>
+                  <Text style={styles.bpmLabel}>BPM</Text>
+                </LinearGradient>
               </View>
-              <View
-                style={[
-                  styles.bpmBadge,
-                  { backgroundColor: getBpmColor(item.heartRate) },
-                ]}
-              >
-                <Text style={styles.bpmValue}>{item.heartRate}</Text>
-                <Text style={styles.bpmLabel}>BPM</Text>
-              </View>
-              <TouchableOpacity
-                onPress={() => handleDelete(item.id)}
-                style={styles.deleteButton}
-              >
-                <Text style={styles.deleteButtonText}>
-                  <MaterialIcons
-                    name="delete-forever"
-                    size={24}
-                    color="#f0ebd8"
-                  />
-                </Text>
-              </TouchableOpacity>
-            </View>
+            </Swipeable>
           ))
         )}
       </ScrollView>
@@ -219,7 +225,7 @@ const styles = StyleSheet.create({
     backgroundColor: "#0d1321",
     borderRadius: 12,
     padding: 16,
-    marginBottom: 12,
+    marginBottom: 20,
     flexDirection: "row",
     justifyContent: "space-between",
     alignItems: "center",
@@ -250,7 +256,7 @@ const styles = StyleSheet.create({
   bpmBadge: {
     paddingHorizontal: 20,
     paddingVertical: 12,
-    borderRadius: 10,
+    borderRadius: 50,
     alignItems: "center",
     minWidth: 80,
   },
@@ -264,14 +270,26 @@ const styles = StyleSheet.create({
     color: "#f0ebd8",
     marginTop: 2,
   },
-  deleteButton: {
-    marginLeft: 12,
-    padding: 8,
+  swipeActions: {
     justifyContent: "center",
     alignItems: "center",
+    marginBottom: 20,
   },
-  deleteButtonText: {
-    fontSize: 24,
+  swipeDeleteAction: {
+    width: 96,
+    height: "100%",
+    backgroundColor: "#920c0cff",
+    borderRadius: 12,
+    justifyContent: "center",
+    alignItems: "center",
+    borderWidth: 1,
+    borderColor: "#28080eff",
+  },
+  swipeDeleteText: {
+    marginTop: 2,
+    fontSize: 12,
+    fontWeight: "600",
+    color: "#f0ebd8",
   },
   emptyState: {
     flex: 1,

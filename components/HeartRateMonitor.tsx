@@ -1,9 +1,22 @@
 import { addMeasurement } from "@/lib/supabaseQueries";
-import { BandPassFilter, PulseDetector } from "@/utils/heartRateDetection";
+import {
+  ButterworthFilter,
+  assessSignalQuality,
+  estimateHeartRateAutocorrelation,
+  weightedMedian,
+} from "@/utils/heartRateDetection";
 import Entypo from "@expo/vector-icons/Entypo";
+import Ionicons from "@expo/vector-icons/Ionicons";
 import { LinearGradient } from "expo-linear-gradient";
-import React, { useCallback, useRef, useState } from "react";
-import { Alert, StyleSheet, Text, TouchableOpacity, View } from "react-native";
+import React, { useCallback, useEffect, useRef, useState } from "react";
+import {
+  Alert,
+  Animated,
+  StyleSheet,
+  Text,
+  TouchableOpacity,
+  View,
+} from "react-native";
 import {
   Camera,
   useCameraDevice,
@@ -14,171 +27,187 @@ import {
 import { Worklets } from "react-native-worklets-core";
 import { useResizePlugin } from "vision-camera-resize-plugin";
 
-// --- Types ---
 interface HeartRateResult {
   bpm: number;
   timestamp: Date;
 }
 
+const SAMPLING_RATE = 30;
+const WINDOW_SIZE = 180;
+const FINGER_DETECTED_THRESHOLD = 80;
+const FINGER_LOST_THRESHOLD = 40;
+const MIN_VALID_BPM = 50;
+const MAX_VALID_BPM = 180;
+const MIN_QUALITY_SCORE = 0.5;
+
 export default function HeartRateMonitor() {
   const [isMonitoring, setIsMonitoring] = useState(false);
   const [currentBPM, setCurrentBPM] = useState<number | null>(null);
-  const [countdown, setCountdown] = useState(0);
-  const [isSaving, setIsSaving] = useState(false);
+  const [progress, setProgress] = useState(0);
   const [fingerDetected, setFingerDetected] = useState(false);
+  const [isSaving, setIsSaving] = useState(false);
+
+  const pulseAnim = useRef(new Animated.Value(1)).current;
+  const fadeAnim = useRef(new Animated.Value(0)).current;
 
   const device = useCameraDevice("back");
   const { hasPermission, requestPermission } = useCameraPermission();
 
-  const format = useCameraFormat(device, [
-    { fps: 30 },
-    { videoResolution: "max" }, // Max res helps with light gathering, but 1080p is sufficient
-  ]);
+  const format = useCameraFormat(device, [{ fps: SAMPLING_RATE }]);
 
   const { resize } = useResizePlugin();
 
-  // --- Processing Refs ---
-  const filterRef = useRef(new BandPassFilter());
-  const detectorRef = useRef(new PulseDetector());
-  const redValueHistoryRef = useRef<number[]>([]);
-  const measurementStartTimeRef = useRef<number>(0);
+  const filterRef = useRef(new ButterworthFilter(SAMPLING_RATE));
+
+  const dataBufferRef = useRef<number[]>([]);
+
   const detectionPhaseRef = useRef<"waiting" | "measuring">("waiting");
-  const fingerDetectedRef = useRef<boolean>(false);
-  const currentBPMRef = useRef<number | null>(null);
+  const validReadingsRef = useRef<number[]>([]);
+  const lastProcessTimeRef = useRef<number>(0);
 
-  // --- Core Logic (Runs on JS Thread) ---
-  // We define this using useCallback so the reference stays stable
+  useEffect(() => {
+    if (fingerDetected && currentBPM) {
+      const interval = 60000 / currentBPM;
+      const pulse = Animated.sequence([
+        Animated.timing(pulseAnim, {
+          toValue: 1.2,
+          duration: interval / 3,
+          useNativeDriver: true,
+        }),
+        Animated.timing(pulseAnim, {
+          toValue: 1,
+          duration: interval / 3,
+          useNativeDriver: true,
+        }),
+      ]);
+      Animated.loop(pulse).start();
+    } else {
+      pulseAnim.setValue(1);
+    }
+  }, [fingerDetected, currentBPM]);
+
+  useEffect(() => {
+    Animated.timing(fadeAnim, {
+      toValue: isMonitoring ? 1 : 0,
+      duration: 300,
+      useNativeDriver: true,
+    }).start();
+  }, [isMonitoring]);
+
   const processFrameData = useCallback((avgRed: number) => {
-    const now = Date.now() / 1000;
+    const now = Date.now();
 
-    // 1. Maintain a history buffer
-    redValueHistoryRef.current.push(avgRed);
-    if (redValueHistoryRef.current.length > 30) {
-      redValueHistoryRef.current.shift();
-    }
-
-    // 2. Phase: Waiting for Finger
     if (detectionPhaseRef.current === "waiting") {
-      // DETECTING FINGER:
-      // When flash is on and finger covers lens, the image is BRIGHT RED.
-      // Threshold: We check if average Red is high (0-255 scale).
-      // A solid red finger is usually > 150, but we use > 60 to be safe across devices.
-      if (redValueHistoryRef.current.length >= 5) {
-        const recent = redValueHistoryRef.current.slice(-5);
-        // Check if values are consistently high (finger is stable)
-        const isCovered = recent.every((val) => val > 100);
-
-        if (isCovered) {
-          console.log("FINGER DETECTED - Starting Measure");
-          detectionPhaseRef.current = "measuring";
-          setFingerDetected(true);
-          measurementStartTimeRef.current = Date.now();
-          setCountdown(15);
-        }
+      if (avgRed > FINGER_DETECTED_THRESHOLD) {
+        setFingerDetected(true);
+        detectionPhaseRef.current = "measuring";
+        dataBufferRef.current = [];
+        validReadingsRef.current = [];
+        filterRef.current.reset();
+        setProgress(0);
+      } else {
+        setFingerDetected(false);
       }
+      return;
     }
-    // 3. Phase: Measuring
-    else if (detectionPhaseRef.current === "measuring") {
-      // Finger Removal Check: If brightness drops, finger is gone
-      if (avgRed < 30) {
+
+    if (detectionPhaseRef.current === "measuring") {
+      if (avgRed < FINGER_LOST_THRESHOLD) {
         setFingerDetected(false);
         detectionPhaseRef.current = "waiting";
-        Alert.alert(
-          "Finger Removed",
-          "Please keep your finger covering the camera and flash."
-        );
-        stopMonitoring();
+        setProgress(0);
         return;
       }
 
-      // Signal Processing
-      const filtered = filterRef.current.processValue(avgRed);
-      detectorRef.current.addNewValue(filtered, now);
+      const filteredValue = filterRef.current.process(avgRed);
 
-      // Get BPM
-      const avgPeriod = detectorRef.current.getAverage();
-      if (avgPeriod > 0) {
-        const bpm = Math.round(60 / avgPeriod);
-        // Realistic bounds for human heart rate
-        if (bpm >= 40 && bpm <= 220) {
-          currentBPMRef.current = bpm;
-          setCurrentBPM(bpm);
+      if (dataBufferRef.current.length > 5) {
+        const lastValue =
+          dataBufferRef.current[dataBufferRef.current.length - 1];
+        const change = Math.abs(filteredValue - lastValue);
+
+        if (change > 10) {
+          dataBufferRef.current = dataBufferRef.current.slice(0, -5);
+          return;
         }
       }
 
-      // Countdown Timer
-      if (measurementStartTimeRef.current > 0) {
-        const elapsed = Math.floor(
-          (Date.now() - measurementStartTimeRef.current) / 1000
-        );
-        const remaining = 15 - elapsed;
+      dataBufferRef.current.push(filteredValue);
 
-        if (remaining <= 0) {
-          finalizeMeasurement();
-        } else {
-          setCountdown(remaining);
+      if (dataBufferRef.current.length > WINDOW_SIZE) {
+        dataBufferRef.current.shift();
+      }
+
+      const currentProgress = Math.min(
+        dataBufferRef.current.length / WINDOW_SIZE,
+        1
+      );
+      setProgress(currentProgress);
+
+      if (
+        dataBufferRef.current.length === WINDOW_SIZE &&
+        now - lastProcessTimeRef.current > 500
+      ) {
+        lastProcessTimeRef.current = now;
+
+        const quality = assessSignalQuality(dataBufferRef.current);
+
+        if (quality >= MIN_QUALITY_SCORE) {
+          const estimatedBPM = estimateHeartRateAutocorrelation(
+            dataBufferRef.current,
+            SAMPLING_RATE
+          );
+
+          if (estimatedBPM >= MIN_VALID_BPM && estimatedBPM <= MAX_VALID_BPM) {
+            validReadingsRef.current.push(estimatedBPM);
+
+            const smoothed = weightedMedian(validReadingsRef.current.slice(-7));
+            setCurrentBPM(Math.round(smoothed));
+
+            if (validReadingsRef.current.length >= 12) {
+              finalizeMeasurement(Math.round(smoothed));
+            }
+          }
         }
       }
     }
   }, []);
 
-  // Wrap the JS function to be callable from the Worklet (UI Thread)
   const runOnJsHandler = Worklets.createRunOnJS(processFrameData);
 
-  // --- Frame Processor (Runs on Background Thread) ---
   const frameProcessor = useFrameProcessor(
     (frame) => {
       "worklet";
-
-      // Safety check: Only run if monitoring
       if (!isMonitoring) return;
 
-      try {
-        // Resize 1080p/4k frame down to 16x16 pixels.
-        // We only need the average color, so high res is not needed.
-        const resized = resize(frame, {
-          scale: { width: 16, height: 16 },
-          pixelFormat: "rgb",
-          dataType: "uint8",
-        });
+      // Resize to 16x16 for efficient average calculation
+      const resized = resize(frame, {
+        scale: { width: 16, height: 16 },
+        pixelFormat: "rgb",
+        dataType: "uint8",
+      });
 
-        // Calculate Average Red
-        // resized is a Uint8Array: [R, G, B, R, G, B, ...]
-        let totalRed = 0;
-        const numPixels = resized.length / 3;
-
-        for (let i = 0; i < resized.length; i += 3) {
-          totalRed += resized[i];
-        }
-
-        const avgRed = totalRed / numPixels;
-
-        // Pass to JS thread
-        runOnJsHandler(avgRed);
-      } catch (e) {
-        console.log("Frame processing error:", e);
+      // Calculate average Red channel intensity
+      let totalRed = 0;
+      const numPixels = resized.length / 3;
+      for (let i = 0; i < resized.length; i += 3) {
+        totalRed += resized[i];
       }
+      const avgRed = totalRed / numPixels;
+
+      runOnJsHandler(avgRed);
     },
     [isMonitoring, runOnJsHandler, resize]
   );
 
-  // --- Control Functions ---
   const startMonitoring = useCallback(async () => {
     if (!hasPermission) {
       const granted = await requestPermission();
       if (!granted) return;
     }
-
-    console.log("Initializing monitoring...");
-
-    // Reset Logic
     filterRef.current.reset();
-    detectorRef.current.reset();
-    redValueHistoryRef.current = [];
-    currentBPMRef.current = null;
-    measurementStartTimeRef.current = 0;
-
-    // Set State
+    dataBufferRef.current = [];
+    validReadingsRef.current = [];
     setCurrentBPM(null);
     setFingerDetected(false);
     detectionPhaseRef.current = "waiting";
@@ -188,136 +217,153 @@ export default function HeartRateMonitor() {
   const stopMonitoring = useCallback(() => {
     setIsMonitoring(false);
     setFingerDetected(false);
-    setCountdown(0);
     detectionPhaseRef.current = "waiting";
+    setProgress(0);
   }, []);
 
-  const finalizeMeasurement = async () => {
+  const finalizeMeasurement = async (finalBPM: number) => {
     stopMonitoring();
-    const finalBPM = currentBPMRef.current;
+    setIsSaving(true);
+    const { error } = await addMeasurement(finalBPM);
+    setIsSaving(false);
 
-    if (finalBPM) {
-      setIsSaving(true);
-
-      // Save measurement to database
-      const { data, error } = await addMeasurement(finalBPM);
-
-      setIsSaving(false);
-
-      if (error) {
-        Alert.alert(
-          "Measurement Recorded",
-          `Heart Rate: ${finalBPM} BPM\n\nNote: Could not save to history. ${error.message}`,
-          [{ text: "OK" }]
-        );
-      } else {
-        Alert.alert(
-          "Success",
-          `Heart Rate: ${finalBPM} BPM\n\nMeasurement saved successfully!`,
-          [{ text: "OK" }]
-        );
-      }
+    if (error) {
+      Alert.alert(
+        "Recorded",
+        `${finalBPM} BPM (Save Failed: ${error.message})`
+      );
     } else {
-      Alert.alert("Error", "Could not get a clear reading. Please try again.");
+      Alert.alert("Success", `${finalBPM} BPM`);
     }
   };
 
-  // --- Render ---
-  if (!hasPermission)
+  if (!device || !hasPermission)
     return (
-      <View style={styles.container}>
-        <Text style={styles.permissionText}>No Permission</Text>
-      </View>
-    );
-  if (!device)
-    return (
-      <View style={styles.container}>
-        <Text style={styles.permissionText}>No Camera Device</Text>
-      </View>
+      <LinearGradient colors={["#3e5c76", "#748cab"]} style={styles.container}>
+        <View style={styles.permissionContainer}>
+          <Entypo name="camera" size={60} colors={["#28080eff", "#920c0cff"]} />
+          <Text style={styles.permissionText}>Camera Access Required</Text>
+          <TouchableOpacity
+            onPress={requestPermission}
+            style={styles.permissionBtn}
+          >
+            <Text style={styles.permissionBtnText}>Grant Permission</Text>
+          </TouchableOpacity>
+        </View>
+      </LinearGradient>
     );
 
   return (
     <View style={styles.container}>
-      {/* CRITICAL: 
-         1. isActive must be true for the Torch to turn on.
-         2. torch prop must be dynamic.
-         3. pixelFormat="yuv" ensures the resize plugin works fastest.
-      */}
       <Camera
         style={StyleSheet.absoluteFill}
         device={device}
         format={format}
-        isActive={true} // Keep camera active to avoid "warm up" delay on torch
+        isActive={true}
         frameProcessor={frameProcessor}
         pixelFormat="yuv"
         torch={isMonitoring ? "on" : "off"}
-        enableZoomGesture={false}
       />
+
+      <View style={styles.darkOverlay} />
 
       <View style={styles.overlay}>
         {isMonitoring ? (
-          <>
-            <View style={styles.instructionCard}>
-              <Entypo
-                name="hand"
-                size={50}
-                color="#f0ebd8"
-                style={styles.icon}
-              />
-              {!fingerDetected ? (
-                <>
-                  <Text style={styles.instructionText}>
-                    Cover Camera & Flash
-                  </Text>
-                  <Text style={styles.detectingText}>
-                    Detecting finger... (Avg Red)
-                  </Text>
-                </>
-              ) : (
-                <>
-                  <Text style={styles.instructionText}>Hold Still</Text>
-                  <Text style={styles.instructionSubtext}>
-                    Measuring Heart Rate...
-                  </Text>
-                </>
-              )}
-            </View>
+          <Animated.View style={[styles.card, { opacity: fadeAnim }]}>
+            {!fingerDetected ? (
+              <View style={styles.waitingContainer}>
+                <View style={styles.iconContainer}>
+                  <Ionicons name="finger-print" size={54} color="black" />
+                </View>
+                <Text style={styles.instructionTitle}>Place Your Finger</Text>
+                <Text style={styles.instructionSubtitle}>
+                  Cover the camera and flash completely
+                </Text>
+                <View style={styles.tipContainer}>
+                  <Text style={styles.tipText}>Keep your hand steady</Text>
+                </View>
+              </View>
+            ) : (
+              <View style={styles.measuringContainer}>
+                <Animated.View
+                  style={[
+                    styles.heartIconContainer,
+                    { transform: [{ scale: pulseAnim }] },
+                  ]}
+                >
+                  <LinearGradient
+                    colors={["#28080eff", "#920c0cff"]}
+                    style={styles.heartGradient}
+                  >
+                    <Entypo name="heart" size={50} color="#fff" />
+                  </LinearGradient>
+                </Animated.View>
 
-            {fingerDetected && (
-              <View style={styles.measurementCard}>
-                <Text style={styles.countdownText}>{countdown}s</Text>
-                <View style={styles.bpmDisplay}>
-                  <Text style={styles.bpmValue}>{currentBPM || "--"}</Text>
+                <View style={styles.bpmContainer}>
+                  <Text style={styles.bpmText}>
+                    {currentBPM ? `${currentBPM}` : "--"}
+                  </Text>
                   <Text style={styles.bpmLabel}>BPM</Text>
+                </View>
+
+                {currentBPM && (
+                  <View style={styles.statusBadge}>
+                    <View style={styles.pulseIndicator} />
+                    <Text style={styles.statusText}>Measuring...</Text>
+                  </View>
+                )}
+
+                <View style={styles.progressContainer}>
+                  <View style={styles.progressBarWrapper}>
+                    <LinearGradient
+                      colors={["#28080eff", "#920c0cff"]}
+                      start={{ x: 0, y: 0 }}
+                      end={{ x: 1, y: 0 }}
+                      style={[
+                        styles.progressFill,
+                        { width: `${progress * 100}%` },
+                      ]}
+                    />
+                  </View>
+                  <Text style={styles.progressText}>
+                    {Math.round(progress * 100)}%
+                  </Text>
                 </View>
               </View>
             )}
 
             <TouchableOpacity
               onPress={stopMonitoring}
-              style={styles.stopButton}
+              style={styles.cancelBtn}
+              activeOpacity={0.7}
             >
-              <Text style={styles.stopButtonText}>Cancel</Text>
+              <Text style={styles.cancelText}>Cancel</Text>
             </TouchableOpacity>
-          </>
+          </Animated.View>
         ) : (
-          <View style={styles.centerContent}>
-            <Entypo
-              name="heart"
-              size={60}
-              color="#f0ebd8"
-              style={{ marginBottom: 20 }}
-            />
-            <Text style={styles.instructionTitle}>Heart Rate Monitor</Text>
-            <Text style={styles.instructionBody}>
-              Place your finger over the camera lens and flash to begin.
-            </Text>
-            <TouchableOpacity onPress={startMonitoring}>
+          <View style={styles.startContainer}>
+            <View style={styles.welcomeContainer}>
               <LinearGradient
-                colors={["#3e5c76", "#748cab"]}
-                style={styles.button}
+                colors={["#28080eff", "#920c0cff"]}
+                style={styles.welcomeIconContainer}
               >
-                <Text style={styles.buttonText}>Start Measurement</Text>
+                <Entypo name="heart" size={60} color="#fff" />
+              </LinearGradient>
+              <Text style={styles.welcomeTitle}>Heart Rate Monitor</Text>
+              <Text style={styles.welcomeSubtitle}>
+                Measure your pulse in 15 seconds
+              </Text>
+            </View>
+
+            <TouchableOpacity onPress={startMonitoring} activeOpacity={0.8}>
+              <LinearGradient
+                colors={["#28080eff", "#ed0909ff"]}
+                start={{ x: 0, y: 0 }}
+                end={{ x: 1, y: 0 }}
+                style={styles.startBtn}
+              >
+                <Entypo name="controller-play" size={24} color="#fff" />
+                <Text style={styles.startText}>Start Measurement</Text>
               </LinearGradient>
             </TouchableOpacity>
           </View>
@@ -328,77 +374,252 @@ export default function HeartRateMonitor() {
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: "#1d2d44" },
-  overlay: { flex: 1, padding: 20, justifyContent: "center" },
-  centerContent: { alignItems: "center", justifyContent: "center" },
-  permissionText: {
-    fontSize: 18,
-    color: "#f0ebd8",
-    textAlign: "center",
-    marginTop: 100,
+  container: {
+    flex: 1,
+    backgroundColor: "#000",
   },
-  instructionCard: {
-    backgroundColor: "rgba(13, 19, 33, 0.8)",
-    borderRadius: 16,
-    padding: 24,
+  darkOverlay: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: "rgba(0, 0, 0, 0.5)",
+  },
+  overlay: {
+    flex: 1,
+    justifyContent: "center",
     alignItems: "center",
-    marginBottom: 20,
+    padding: 24,
   },
-  icon: { marginBottom: 12 },
-  instructionText: {
+
+  permissionContainer: {
+    flex: 1,
+    justifyContent: "center",
+    alignItems: "center",
+    padding: 40,
+  },
+  permissionText: {
+    color: "#fff",
+    fontSize: 22,
+    fontWeight: "600",
+    marginTop: 24,
+    marginBottom: 16,
+    textAlign: "center",
+  },
+  permissionBtn: {
+    backgroundColor: "#920c0cff",
+    paddingHorizontal: 32,
+    paddingVertical: 16,
+    borderRadius: 30,
+    marginTop: 16,
+  },
+  permissionBtnText: {
+    color: "#fff",
+    fontSize: 16,
+    fontWeight: "600",
+  },
+
+  card: {
+    backgroundColor: "rgba(40, 8, 14, 0.95)",
+    padding: 32,
+    borderRadius: 30,
+    alignItems: "center",
+    width: "90%",
+    maxWidth: 400,
+    borderWidth: 1,
+    borderColor: "rgba(233, 69, 96, 0.3)",
+    shadowColor: "#e94560",
+    shadowOffset: { width: 0, height: 10 },
+    shadowOpacity: 0.3,
+    shadowRadius: 20,
+    elevation: 10,
+  },
+
+  startContainer: {
+    alignItems: "center",
+    width: "100%",
+  },
+  welcomeContainer: {
+    alignItems: "center",
+    marginBottom: 40,
+  },
+  welcomeIconContainer: {
+    width: 120,
+    height: 120,
+    borderRadius: 60,
+    justifyContent: "center",
+    alignItems: "center",
+    marginBottom: 24,
+    shadowColor: "#e94560",
+    shadowOffset: { width: 0, height: 8 },
+    shadowOpacity: 0.4,
+    shadowRadius: 16,
+    elevation: 8,
+  },
+  welcomeTitle: {
+    color: "#fff",
+    fontSize: 28,
+    fontWeight: "700",
+    marginBottom: 8,
+    textAlign: "center",
+  },
+  welcomeSubtitle: {
+    color: "#a0a0a0",
+    fontSize: 16,
+    textAlign: "center",
+  },
+  startBtn: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 12,
+    paddingHorizontal: 40,
+    paddingVertical: 18,
+    borderRadius: 30,
+    shadowColor: "#e94560",
+    shadowOffset: { width: 0, height: 6 },
+    shadowOpacity: 0.4,
+    shadowRadius: 12,
+    elevation: 8,
+  },
+  startText: {
+    color: "#fff",
     fontSize: 18,
-    fontWeight: "bold",
-    color: "#f0ebd8",
-    textAlign: "center",
+    fontWeight: "700",
   },
-  instructionSubtext: {
-    fontSize: 14,
-    color: "#748cab",
-    textAlign: "center",
-    marginTop: 4,
+
+  waitingContainer: {
+    alignItems: "center",
+    width: "100%",
   },
-  detectingText: {
-    fontSize: 12,
-    color: "#f0ebd8",
-    marginTop: 8,
-    fontStyle: "italic",
+  iconContainer: {
+    width: 100,
+    height: 100,
+    borderRadius: 50,
+    backgroundColor: "rgba(233, 69, 96, 0.15)",
+    justifyContent: "center",
+    alignItems: "center",
+    marginBottom: 24,
+    borderWidth: 2,
+    borderColor: "rgba(233, 69, 96, 0.3)",
   },
   instructionTitle: {
+    color: "#fff",
     fontSize: 24,
-    fontWeight: "bold",
-    color: "#f0ebd8",
-    marginBottom: 10,
-  },
-  instructionBody: {
-    fontSize: 16,
-    color: "#748cab",
+    fontWeight: "700",
+    marginBottom: 8,
     textAlign: "center",
-    marginBottom: 30,
   },
-  measurementCard: {
-    backgroundColor: "rgba(13, 19, 33, 0.8)",
-    borderRadius: 16,
-    padding: 24,
-    alignItems: "center",
+  instructionSubtitle: {
+    color: "#a0a0a0",
+    fontSize: 15,
+    textAlign: "center",
     marginBottom: 20,
   },
-  countdownText: {
-    fontSize: 32,
-    fontWeight: "bold",
-    color: "#748cab",
-    marginBottom: 10,
+  tipContainer: {
+    backgroundColor: "rgba(233, 69, 96, 0.1)",
+    paddingHorizontal: 20,
+    paddingVertical: 12,
+    borderRadius: 20,
+    borderWidth: 1,
+    borderColor: "rgba(233, 69, 96, 0.2)",
   },
-  bpmDisplay: { alignItems: "center" },
-  bpmValue: { fontSize: 48, fontWeight: "bold", color: "#f0ebd8" },
-  bpmLabel: { fontSize: 16, color: "#748cab" },
-  button: { paddingHorizontal: 40, paddingVertical: 18, borderRadius: 12 },
-  buttonText: { color: "#f0ebd8", fontSize: 18, fontWeight: "bold" },
-  stopButton: {
-    backgroundColor: "#c1121f",
-    paddingHorizontal: 40,
-    paddingVertical: 14,
-    borderRadius: 12,
-    alignSelf: "center",
+  tipText: {
+    color: "#e0e0e0",
+    fontSize: 14,
   },
-  stopButtonText: { color: "#f0ebd8", fontSize: 18, fontWeight: "bold" },
+
+  measuringContainer: {
+    alignItems: "center",
+    width: "100%",
+  },
+  heartIconContainer: {
+    marginBottom: 24,
+  },
+  heartGradient: {
+    width: 100,
+    height: 100,
+    borderRadius: 50,
+    justifyContent: "center",
+    alignItems: "center",
+    shadowColor: "#e94560",
+    shadowOffset: { width: 0, height: 8 },
+    shadowOpacity: 0.5,
+    shadowRadius: 16,
+    elevation: 8,
+  },
+  bpmContainer: {
+    alignItems: "center",
+    marginBottom: 16,
+  },
+  bpmText: {
+    color: "#fff",
+    fontSize: 72,
+    fontWeight: "800",
+    lineHeight: 80,
+    letterSpacing: -2,
+  },
+  bpmLabel: {
+    color: "#920c0cff",
+    fontSize: 18,
+    fontWeight: "600",
+    letterSpacing: 2,
+  },
+  statusBadge: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+    backgroundColor: "rgba(233, 69, 96, 0.15)",
+    paddingHorizontal: 16,
+    paddingVertical: 8,
+    borderRadius: 20,
+    marginBottom: 24,
+    borderWidth: 1,
+    borderColor: "rgba(233, 69, 96, 0.3)",
+  },
+  pulseIndicator: {
+    width: 8,
+    height: 8,
+    borderRadius: 4,
+    backgroundColor: "#12b07cff",
+  },
+  statusText: {
+    color: "#e0e0e0",
+    fontSize: 14,
+    fontWeight: "600",
+  },
+  progressContainer: {
+    width: "100%",
+    alignItems: "center",
+    gap: 8,
+  },
+  progressBarWrapper: {
+    width: "100%",
+    height: 8,
+    backgroundColor: "rgba(233, 69, 96, 0.15)",
+    borderRadius: 4,
+    overflow: "hidden",
+    borderWidth: 1,
+    borderColor: "rgba(233, 69, 96, 0.2)",
+  },
+  progressFill: {
+    height: "100%",
+    borderRadius: 4,
+  },
+  progressText: {
+    color: "#a0a0a0",
+    fontSize: 13,
+    fontWeight: "600",
+  },
+
+  cancelBtn: {
+    marginTop: 24,
+    paddingHorizontal: 24,
+    paddingVertical: 12,
+    borderRadius: 20,
+    backgroundColor: "rgba(255, 255, 255, 0.05)",
+    borderWidth: 1,
+    borderColor: "rgba(255, 255, 255, 0.1)",
+  },
+  cancelText: {
+    color: "#a0a0a0",
+    fontSize: 16,
+    fontWeight: "600",
+  },
 });
