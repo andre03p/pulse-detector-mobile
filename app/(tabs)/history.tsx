@@ -8,9 +8,12 @@ import React, { useCallback, useEffect, useState } from "react";
 import {
   ActivityIndicator,
   Alert,
+  Platform,
   ScrollView,
+  Share,
   StyleSheet,
   Text,
+  TouchableOpacity,
   View,
 } from "react-native";
 import { Swipeable } from "react-native-gesture-handler";
@@ -30,6 +33,224 @@ export default function History() {
   const [isLoading, setIsLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const insets = useSafeAreaInsets();
+
+  // Corrected export functions with proper dependency checks
+
+  const escapeCsvValue = (value: string) => {
+    const needsQuotes =
+      value.includes(",") || value.includes("\n") || value.includes('"');
+    const escaped = value.replace(/"/g, '""');
+    return needsQuotes ? `"${escaped}"` : escaped;
+  };
+
+  const shareFile = async (uri: string) => {
+    // Try expo-sharing first (better UX on mobile)
+    try {
+      const Sharing = await import("expo-sharing");
+      if (
+        Sharing?.isAvailableAsync &&
+        typeof Sharing.isAvailableAsync === "function"
+      ) {
+        const canShare = await Sharing.isAvailableAsync();
+        if (canShare && Sharing.shareAsync) {
+          await Sharing.shareAsync(uri);
+          return;
+        }
+      }
+    } catch (err) {
+      console.log("expo-sharing not available");
+    }
+
+    // Fallback to React Native Share
+    try {
+      if (Platform.OS === "ios") {
+        await Share.share({ url: uri });
+      } else {
+        await Share.share({ message: `File saved at: ${uri}`, url: uri });
+      }
+    } catch (error) {
+      console.error("Share error:", error);
+      Alert.alert("Export successful", `File saved to: ${uri}`);
+    }
+  };
+
+  const exportAsJson = async () => {
+    try {
+      const { File, Paths } = await import("expo-file-system");
+
+      const payload = history.map((h) => ({
+        id: h.id,
+        created_at: h.created_at,
+        heartRate: h.heartRate,
+      }));
+
+      const fileName = `pulse_history_${Date.now()}.json`;
+      const file = new File(Paths.document, fileName);
+
+      await file.write(JSON.stringify(payload, null, 2));
+
+      await shareFile(file.uri);
+      Alert.alert("Success", "JSON file exported successfully");
+    } catch (error) {
+      console.error("Export JSON error:", error);
+      Alert.alert("Export failed", "Could not export data as JSON");
+    }
+  };
+
+  const exportAsCsv = async () => {
+    try {
+      const { File, Paths } = await import("expo-file-system");
+
+      const header = ["id", "created_at", "heartRate"].join(",");
+      const rows = history.map((h) =>
+        [
+          String(h.id),
+          escapeCsvValue(new Date(h.created_at).toISOString()),
+          String(h.heartRate),
+        ].join(",")
+      );
+      const csv = [header, ...rows].join("\n");
+
+      const fileName = `pulse_history_${Date.now()}.csv`;
+      const file = new File(Paths.document, fileName);
+
+      await file.write(csv);
+
+      await shareFile(file.uri);
+      Alert.alert("Success", "CSV file exported successfully");
+    } catch (error) {
+      console.error("Export CSV error:", error);
+      Alert.alert("Export failed", "Could not export data as CSV");
+    }
+  };
+
+  const exportAsPdf = async () => {
+    try {
+      const Print = await import("expo-print");
+
+      // Check if expo-print is properly installed
+      if (
+        !Print?.printToFileAsync ||
+        typeof Print.printToFileAsync !== "function"
+      ) {
+        Alert.alert(
+          "PDF Export Unavailable",
+          "The expo-print package is not installed. Please run:\n\nnpx expo install expo-print\n\nThen rebuild your app.",
+          [{ text: "OK" }]
+        );
+        return;
+      }
+
+      const rowsHtml = history
+        .map((h) => {
+          const date = new Date(h.created_at);
+          return `
+          <tr>
+            <td>${date.toLocaleString()}</td>
+            <td style="text-align:right;">${h.heartRate}</td>
+          </tr>
+        `;
+        })
+        .join("");
+
+      const html = `
+      <!DOCTYPE html>
+      <html>
+        <head>
+          <meta charset="utf-8" />
+          <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+          <style>
+            body { 
+              font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Arial, sans-serif; 
+              padding: 20px; 
+              margin: 0;
+            }
+            h1 { 
+              font-size: 24px; 
+              margin: 0 0 8px 0; 
+              color: #0d1321;
+            }
+            p { 
+              margin: 0 0 16px 0; 
+              color: #666; 
+              font-size: 14px; 
+            }
+            table { 
+              width: 100%; 
+              border-collapse: collapse; 
+              margin-top: 8px;
+            }
+            th, td { 
+              border-bottom: 1px solid #ddd; 
+              padding: 12px 8px; 
+              font-size: 13px; 
+            }
+            th { 
+              text-align: left; 
+              background-color: #f5f5f5;
+              font-weight: 600;
+              color: #0d1321;
+            }
+            tr:hover {
+              background-color: #f9f9f9;
+            }
+          </style>
+        </head>
+        <body>
+          <h1>Heart Rate History</h1>
+          <p>Exported on ${new Date().toLocaleString()}</p>
+          <p>Total readings: ${history.length}</p>
+          <table>
+            <thead>
+              <tr>
+                <th>Date/Time</th>
+                <th style="text-align:right;">BPM</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${rowsHtml}
+            </tbody>
+          </table>
+        </body>
+      </html>
+    `;
+
+      const { uri } = await Print.printToFileAsync({
+        html,
+        base64: false,
+      });
+
+      await shareFile(uri);
+      Alert.alert("Success", "PDF file exported successfully");
+    } catch (error) {
+      console.error("Export PDF error:", error);
+      Alert.alert(
+        "Export failed",
+        "Could not export data as PDF. Make sure expo-print is installed:\n\nnpx expo install expo-print"
+      );
+    }
+  };
+
+  const handleExport = async () => {
+    if (Platform.OS === "web") {
+      Alert.alert(
+        "Export not supported",
+        "Exporting files is not supported on web for this app. Please use Android/iOS."
+      );
+      return;
+    }
+    if (history.length === 0) {
+      Alert.alert("Nothing to export", "No readings available yet.");
+      return;
+    }
+
+    Alert.alert("Export data", "Choose a format:", [
+      { text: "CSV", onPress: () => void exportAsCsv() },
+      { text: "JSON", onPress: () => void exportAsJson() },
+      { text: "PDF", onPress: () => void exportAsPdf() },
+      { text: "Cancel", style: "cancel" },
+    ]);
+  };
 
   const renderRightActions = (id: number) => {
     return (
@@ -145,6 +366,11 @@ export default function History() {
           {history.length} {history.length === 1 ? "reading" : "readings"}{" "}
           recorded
         </Text>
+
+        <TouchableOpacity style={styles.exportButton} onPress={handleExport}>
+          <MaterialIcons name="file-download" size={18} color="#f0ebd8" />
+          <Text style={styles.exportButtonText}>Export data</Text>
+        </TouchableOpacity>
       </LinearGradient>
 
       <ScrollView style={styles.scrollView}>
@@ -195,12 +421,12 @@ export default function History() {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: "#1d2d44",
+    backgroundColor: "#050000",
   },
   header: {
     padding: 20,
     paddingTop: 40,
-    backgroundColor: "#0d1321",
+    backgroundColor: "#050000",
     borderBottomWidth: 1,
     borderBottomColor: "#3e5c76",
   },
@@ -216,6 +442,24 @@ const styles = StyleSheet.create({
     fontSize: 14,
     color: "#748cab",
     textAlign: "center",
+  },
+  exportButton: {
+    marginTop: 12,
+    alignSelf: "center",
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+    paddingHorizontal: 14,
+    paddingVertical: 10,
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: "#3e5c76",
+    backgroundColor: "#0d1321",
+  },
+  exportButtonText: {
+    color: "#f0ebd8",
+    fontSize: 14,
+    fontWeight: "600",
   },
   scrollView: {
     flex: 1,

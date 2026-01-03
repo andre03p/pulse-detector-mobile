@@ -31,6 +31,12 @@ export default function Footer() {
       href: "/(tabs)/stats",
     },
     {
+      name: "Alarms",
+      icon: "notifications-outline",
+      iconFamily: "Ionicons",
+      href: "/(tabs)/alarms",
+    },
+    {
       name: "Profile",
       icon: "person",
       iconFamily: "FontAwesome6",

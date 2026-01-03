@@ -96,7 +96,7 @@ export default function Profile() {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: "#1d2d44",
+    backgroundColor: "#050000",
     paddingBottom: 80,
   },
   header: {

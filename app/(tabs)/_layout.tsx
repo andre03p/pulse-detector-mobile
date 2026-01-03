@@ -12,6 +12,7 @@ export default function TabsLayout() {
       <Tabs.Screen name="home" />
       <Tabs.Screen name="history" />
       <Tabs.Screen name="stats" />
+      <Tabs.Screen name="alarms" />
       <Tabs.Screen name="profile" />
     </Tabs>
   );
