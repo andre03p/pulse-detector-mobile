@@ -27,7 +27,6 @@ export default function Login() {
   };
 
   const handleLogin = async () => {
-    // Trim whitespace
     const trimmedEmail = email.trim();
     const trimmedPassword = password.trim();
 

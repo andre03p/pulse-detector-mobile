@@ -12,10 +12,8 @@ export default function RootLayout() {
       console.log("Deep link received:", event.url);
     };
 
-    // Add listener for deep links
     const subscription = Linking.addEventListener("url", handleDeepLink);
 
-    // Check if app was opened via a deep link
     Linking.getInitialURL().then((url) => {
       if (url) {
         console.log("Initial URL:", url);

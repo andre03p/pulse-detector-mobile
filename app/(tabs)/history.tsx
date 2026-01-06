@@ -245,10 +245,10 @@ export default function History() {
     }
 
     Alert.alert("Export data", "Choose a format:", [
-      { text: "CSV", onPress: () => void exportAsCsv() },
-      { text: "JSON", onPress: () => void exportAsJson() },
-      { text: "PDF", onPress: () => void exportAsPdf() },
       { text: "Cancel", style: "cancel" },
+
+      { text: "CSV", onPress: () => void exportAsCsv() },
+      { text: "PDF", onPress: () => void exportAsPdf() },
     ]);
   };
 
@@ -359,60 +359,76 @@ export default function History() {
   }
 
   return (
-    <View style={[styles.container, { paddingBottom: footerHeight }]}>
-      <LinearGradient colors={["#0d1321", "#1d2d44"]} style={styles.header}>
-        <Text style={styles.title}>Heart Rate History</Text>
-        <Text style={styles.subtitle}>
-          {history.length} {history.length === 1 ? "reading" : "readings"}{" "}
-          recorded
-        </Text>
-
-        <TouchableOpacity style={styles.exportButton} onPress={handleExport}>
-          <MaterialIcons name="file-download" size={18} color="#f0ebd8" />
-          <Text style={styles.exportButtonText}>Export data</Text>
-        </TouchableOpacity>
-      </LinearGradient>
-
-      <ScrollView style={styles.scrollView}>
-        {history.length === 0 ? (
-          <View style={styles.emptyState}>
-            <Text style={styles.emptyIcon}>
-              <Ionicons name="stats-chart-outline" size={24} color="#f0ebd8" />
-            </Text>
-            <Text style={styles.emptyTitle}>No readings yet</Text>
-            <Text style={styles.emptySubtitle}>
-              Start monitoring your heart rate to see your history
-            </Text>
+    <View style={styles.container}>
+      <ScrollView
+        style={styles.scrollView}
+        contentContainerStyle={{ paddingBottom: footerHeight }}
+        showsVerticalScrollIndicator={false}
+      >
+        <LinearGradient
+          colors={["#0d1321", "#1d2d44"]}
+          style={[styles.header, { paddingTop: insets.top + 16 }]}
+        >
+          <View style={styles.headerContent}>
+            <Ionicons name="time" size={28} color="#f0ebd8" />
+            <Text style={styles.title}>History</Text>
           </View>
-        ) : (
-          history.map((item) => (
-            <Swipeable
-              key={item.id}
-              overshootRight={false}
-              renderRightActions={() => renderRightActions(item.id)}
-            >
-              <View style={styles.historyCard}>
-                <View style={styles.cardLeft}>
-                  <Text style={styles.cardDate}>
-                    {formatDate(item.created_at)}
-                  </Text>
-                  <Text style={styles.cardTime}>
-                    {formatTime(item.created_at)}
-                  </Text>
+          <Text style={styles.subtitle}>
+            {history.length} {history.length === 1 ? "reading" : "readings"}{" "}
+            recorded
+          </Text>
+
+          <TouchableOpacity style={styles.exportButton} onPress={handleExport}>
+            <MaterialIcons name="file-download" size={18} color="#f0ebd8" />
+            <Text style={styles.exportButtonText}>Export data</Text>
+          </TouchableOpacity>
+        </LinearGradient>
+
+        <View style={styles.content}>
+          {history.length === 0 ? (
+            <View style={styles.emptyState}>
+              <Text style={styles.emptyIcon}>
+                <Ionicons
+                  name="stats-chart-outline"
+                  size={24}
+                  color="#f0ebd8"
+                />
+              </Text>
+              <Text style={styles.emptyTitle}>No readings yet</Text>
+              <Text style={styles.emptySubtitle}>
+                Start monitoring your heart rate to see your history
+              </Text>
+            </View>
+          ) : (
+            history.map((item) => (
+              <Swipeable
+                key={item.id}
+                overshootRight={false}
+                renderRightActions={() => renderRightActions(item.id)}
+              >
+                <View style={styles.historyCard}>
+                  <View style={styles.cardLeft}>
+                    <Text style={styles.cardDate}>
+                      {formatDate(item.created_at)}
+                    </Text>
+                    <Text style={styles.cardTime}>
+                      {formatTime(item.created_at)}
+                    </Text>
+                  </View>
+                  <LinearGradient
+                    colors={["#3e5c76", "#748cab"]}
+                    start={{ x: 0, y: 0 }}
+                    end={{ x: 1, y: 1 }}
+                    style={styles.bpmBadge}
+                  >
+                    <Text style={styles.bpmValue}>{item.heartRate}</Text>
+                    <Text style={styles.bpmLabel}>BPM</Text>
+                  </LinearGradient>
                 </View>
-                <LinearGradient
-                  colors={["#3e5c76", "#748cab"]}
-                  start={{ x: 0, y: 0 }}
-                  end={{ x: 1, y: 1 }}
-                  style={styles.bpmBadge}
-                >
-                  <Text style={styles.bpmValue}>{item.heartRate}</Text>
-                  <Text style={styles.bpmLabel}>BPM</Text>
-                </LinearGradient>
-              </View>
-            </Swipeable>
-          ))
-        )}
+              </Swipeable>
+            ))
+          )}
+        </View>
       </ScrollView>
     </View>
   );
@@ -423,20 +439,24 @@ const styles = StyleSheet.create({
     flex: 1,
     backgroundColor: "#050000",
   },
+  scrollView: {
+    flex: 1,
+  },
   header: {
-    padding: 20,
-    paddingTop: 40,
-    backgroundColor: "#050000",
-    borderBottomWidth: 1,
-    borderBottomColor: "#3e5c76",
+    paddingHorizontal: 20,
+    paddingBottom: 20,
+  },
+  headerContent: {
+    flexDirection: "row",
+    justifyContent: "center",
+    alignItems: "center",
+    gap: 12,
+    marginBottom: 8,
   },
   title: {
     fontSize: 28,
     fontWeight: "bold",
     color: "#f0ebd8",
-    marginBottom: 4,
-    marginTop: 4,
-    textAlign: "center",
   },
   subtitle: {
     fontSize: 14,
@@ -461,8 +481,7 @@ const styles = StyleSheet.create({
     fontSize: 14,
     fontWeight: "600",
   },
-  scrollView: {
-    flex: 1,
+  content: {
     padding: 16,
   },
   historyCard: {

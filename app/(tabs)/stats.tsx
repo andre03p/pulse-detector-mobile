@@ -116,8 +116,14 @@ export default function Stats() {
 
   return (
     <ScrollView style={[styles.container, { paddingBottom: footerHeight }]}>
-      <LinearGradient colors={["#0d1321", "#1d2d44"]} style={styles.header}>
-        <Text style={styles.title}>Statistics</Text>
+      <LinearGradient
+        colors={["#0d1321", "#1d2d44"]}
+        style={[styles.header, { paddingTop: insets.top + 16 }]}
+      >
+        <View style={styles.headerContent}>
+          <Ionicons name="stats-chart" size={28} color="#f0ebd8" />
+          <Text style={styles.title}>Statistics</Text>
+        </View>
         <Text style={styles.subtitle}>Your heart health overview</Text>
       </LinearGradient>
 
@@ -225,19 +231,20 @@ const styles = StyleSheet.create({
     paddingBottom: 80,
   },
   header: {
-    padding: 20,
-    paddingTop: 40,
-    backgroundColor: "#0d1321",
-    borderBottomWidth: 1,
-    borderBottomColor: "#3e5c76",
+    paddingHorizontal: 20,
+    paddingBottom: 20,
+  },
+  headerContent: {
+    flexDirection: "row",
+    justifyContent: "center",
+    alignItems: "center",
+    gap: 12,
+    marginBottom: 8,
   },
   title: {
     fontSize: 28,
     fontWeight: "bold",
     color: "#f0ebd8",
-    marginBottom: 4,
-    marginTop: 4,
-    textAlign: "center",
   },
   subtitle: {
     fontSize: 14,

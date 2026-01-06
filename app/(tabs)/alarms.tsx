@@ -137,34 +137,35 @@ export default function AlarmRemindersApp() {
   };
 
   return (
-    <View style={[styles.container, { paddingBottom: insets.bottom + 80 }]}>
-      {/* Header */}
-      <LinearGradient
-        colors={["#0d1321", "#1d2d44"]}
-        style={[styles.header, { paddingTop: insets.top + 16 }]}
+    <View style={styles.container}>
+      <ScrollView
+        style={styles.scrollView}
+        contentContainerStyle={{ paddingBottom: insets.bottom + 80 }}
+        showsVerticalScrollIndicator={false}
       >
-        <View style={styles.headerContent}>
-          <View style={styles.headerLeft}>
+        {/* Header */}
+        <LinearGradient
+          colors={["#0d1321", "#1d2d44"]}
+          style={[styles.header, { paddingTop: insets.top + 16 }]}
+        >
+          <View style={styles.headerContent}>
             <Ionicons name="notifications" size={28} color="#f0ebd8" />
             <Text style={styles.headerTitle}>Reminders</Text>
+            <TouchableOpacity
+              onPress={() => setShowAddForm(!showAddForm)}
+              style={styles.addButton}
+            >
+              <Ionicons
+                name={showAddForm ? "close" : "add"}
+                size={24}
+                color="#f0ebd8"
+              />
+            </TouchableOpacity>
           </View>
-          <TouchableOpacity
-            onPress={() => setShowAddForm(!showAddForm)}
-            style={styles.addButton}
-          >
-            <Ionicons
-              name={showAddForm ? "close" : "add"}
-              size={24}
-              color="#f0ebd8"
-            />
-          </TouchableOpacity>
-        </View>
-        <Text style={styles.headerSubtitle}>
-          Set reminders to measure your heart rate
-        </Text>
-      </LinearGradient>
-
-      <ScrollView style={styles.scrollView}>
+          <Text style={styles.headerSubtitle}>
+            Set reminders to measure your heart rate
+          </Text>
+        </LinearGradient>
         {/* Add Alarm Form */}
         {showAddForm && (
           <View style={styles.formCard}>
@@ -308,26 +309,24 @@ const styles = StyleSheet.create({
     flex: 1,
     backgroundColor: "#050000",
   },
+  scrollView: {
+    flex: 1,
+  },
   header: {
-    paddingBottom: 24,
-    paddingHorizontal: 24,
-    borderBottomWidth: 1,
-    borderBottomColor: "rgba(116, 140, 171, 0.2)",
+    paddingHorizontal: 20,
+    paddingBottom: 20,
   },
   headerContent: {
     flexDirection: "row",
+    justifyContent: "center",
     alignItems: "center",
-    justifyContent: "space-between",
-  },
-  headerLeft: {
-    flexDirection: "row",
-    alignItems: "center",
+    gap: 12,
+    marginBottom: 8,
   },
   headerTitle: {
-    color: "#f0ebd8",
-    fontSize: 30,
+    fontSize: 28,
     fontWeight: "bold",
-    marginLeft: 12,
+    color: "#f0ebd8",
   },
   addButton: {
     backgroundColor: "#748cab",
@@ -337,10 +336,7 @@ const styles = StyleSheet.create({
   headerSubtitle: {
     color: "#748cab",
     fontSize: 14,
-    marginTop: 8,
-  },
-  scrollView: {
-    flex: 1,
+    textAlign: "center",
   },
   formCard: {
     backgroundColor: "#1d2d44",

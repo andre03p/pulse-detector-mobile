@@ -1,8 +1,15 @@
 import { addMeasurement } from "@/lib/supabaseQueries";
 import {
-  ButterworthFilter,
   assessSignalQuality,
+  ButterworthFilter,
+  calculateHRV,
+  calculateIBI,
+  calculatePerfusionIndex,
+  calculateSNR,
+  calculateSQI,
   estimateHeartRateAutocorrelation,
+  estimateRespirationRate,
+  HRVMetrics,
   weightedMedian,
 } from "@/utils/heartRateDetection";
 import Entypo from "@expo/vector-icons/Entypo";
@@ -12,6 +19,7 @@ import React, { useCallback, useEffect, useRef, useState } from "react";
 import {
   Alert,
   Animated,
+  ScrollView,
   StyleSheet,
   Text,
   TouchableOpacity,
@@ -27,212 +35,357 @@ import {
 import { Worklets } from "react-native-worklets-core";
 import { useResizePlugin } from "vision-camera-resize-plugin";
 
+// ============================================
+// HEART RATE MONITOR COMPONENT
+// ============================================
+// This component uses your phone's camera and flashlight to measure your heart rate.
+// How it works: When you place your finger over the camera, the flashlight shines through
+// your skin. As your heart beats, blood flows through your finger, changing how much
+// light passes through. We detect these tiny changes to calculate your heart rate.
+
 interface HeartRateResult {
   bpm: number;
   timestamp: Date;
 }
 
-const SAMPLING_RATE = 30;
-const WINDOW_SIZE = 180;
-const FINGER_DETECTED_THRESHOLD = 80;
-const FINGER_LOST_THRESHOLD = 40;
-const MIN_VALID_BPM = 50;
-const MAX_VALID_BPM = 180;
-const MIN_QUALITY_SCORE = 0.5;
+// Advanced health metrics that provide deeper insights into your cardiovascular health
+interface AdvancedMetrics {
+  ibi: number; // IBI (Inter-Beat Interval): Time between heartbeats in milliseconds
+  hrv: HRVMetrics; // HRV (Heart Rate Variability): How much your heart rate varies - indicates stress/recovery
+  rr: number; // RR (Respiration Rate): How many breaths per minute
+  pi: number; // PI (Perfusion Index): How well blood is flowing through your finger (circulation quality)
+  snr: number; // SNR (Signal-to-Noise Ratio): How clear the signal is (higher = better quality)
+  sqi: number; // SQI (Signal Quality Index): Overall quality score of the measurement (0-100%)
+}
+
+// ============================================
+// MEASUREMENT SETTINGS
+// ============================================
+const SAMPLING_RATE = 30; // How many times per second we check the camera (30 frames per second)
+const WINDOW_SIZE = 180; // How many samples we need before calculating heart rate (about 6 seconds of data)
+const FINGER_DETECTED_THRESHOLD = 80; // Light level that means "finger is covering the camera"
+const FINGER_LOST_THRESHOLD = 40; // Light level that means "finger was removed"
+const MIN_VALID_BPM = 30; // Lowest realistic heart rate (anything lower is probably an error)
+const MAX_VALID_BPM = 200; // Highest realistic heart rate (anything higher is probably an error)
+const MIN_QUALITY_SCORE = 0.5; // Minimum quality score to accept a reading (0-1 scale)
 
 export default function HeartRateMonitor() {
-  const [isMonitoring, setIsMonitoring] = useState(false);
-  const [currentBPM, setCurrentBPM] = useState<number | null>(null);
-  const [progress, setProgress] = useState(0);
-  const [fingerDetected, setFingerDetected] = useState(false);
-  const [isSaving, setIsSaving] = useState(false);
+  // ============================================
+  // STATE VARIABLES (App's memory)
+  // ============================================
+  // These variables keep track of what's currently happening in the app
 
-  const pulseAnim = useRef(new Animated.Value(1)).current;
-  const fadeAnim = useRef(new Animated.Value(0)).current;
+  const [isMonitoring, setIsMonitoring] = useState(false); // True when actively taking a measurement
+  const [currentBPM, setCurrentBPM] = useState<number | null>(null); // Current heart rate in beats per minute
+  const [progress, setProgress] = useState(0); // How far along the measurement is (0 to 1, like 0% to 100%)
+  const [fingerDetected, setFingerDetected] = useState(false); // True when finger is properly covering the camera
+  const [isSaving, setIsSaving] = useState(false); // True when saving the result to the database
+  const [advancedMetrics, setAdvancedMetrics] =
+    useState<AdvancedMetrics | null>(null); // Stores all the extra health metrics
 
-  const device = useCameraDevice("back");
-  const { hasPermission, requestPermission } = useCameraPermission();
+  // Animation variables - make the heart icon pulse in sync with your heartbeat
+  const pulseAnim = useRef(new Animated.Value(1)).current; // Controls heart icon size (scales up and down)
+  const fadeAnim = useRef(new Animated.Value(0)).current; // Controls fade-in/fade-out effect
 
-  const format = useCameraFormat(device, [{ fps: SAMPLING_RATE }]);
+  // Camera setup
+  const device = useCameraDevice("back"); // Use the back camera (where the flashlight is)
+  const { hasPermission, requestPermission } = useCameraPermission(); // Ask user for camera permission
 
-  const { resize } = useResizePlugin();
+  const format = useCameraFormat(device, [{ fps: SAMPLING_RATE }]); // Set camera to capture at our sampling rate
 
+  const { resize } = useResizePlugin(); // Tool to resize camera images for faster processing
+
+  // Signal processing tool - filters out noise to get a clean heart rate signal
   const filterRef = useRef(new ButterworthFilter(SAMPLING_RATE));
 
-  const dataBufferRef = useRef<number[]>([]);
+  // Data storage - keeps track of all the light readings from the camera
+  const dataBufferRef = useRef<number[]>([]); // Array of red light intensity values
 
-  const detectionPhaseRef = useRef<"waiting" | "measuring">("waiting");
-  const validReadingsRef = useRef<number[]>([]);
-  const lastProcessTimeRef = useRef<number>(0);
+  // Tracking variables - keep track of where we are in the measurement process
+  const detectionPhaseRef = useRef<"waiting" | "measuring">("waiting"); // Either waiting for finger or actively measuring
+  const validReadingsRef = useRef<number[]>([]); // Array of valid heart rate readings we've calculated
+  const lastProcessTimeRef = useRef<number>(0); // Timestamp of last calculation (to avoid calculating too often)
 
+  // ============================================
+  // PULSE ANIMATION EFFECT
+  // ============================================
+  // Makes the heart icon beat in sync with your actual heart rate
   useEffect(() => {
     if (fingerDetected && currentBPM) {
-      const interval = 60000 / currentBPM;
+      // Calculate how long between beats (in milliseconds)
+      const interval = 60000 / currentBPM; // 60,000 ms = 1 minute, divided by BPM
+
+      // Create the pulse animation: grow bigger, then shrink back
       const pulse = Animated.sequence([
         Animated.timing(pulseAnim, {
-          toValue: 1.2,
-          duration: interval / 3,
+          toValue: 1.2, // Grow to 120% size
+          duration: interval / 3, // Take 1/3 of the beat time to grow
           useNativeDriver: true,
         }),
         Animated.timing(pulseAnim, {
-          toValue: 1,
-          duration: interval / 3,
+          toValue: 1, // Shrink back to normal size
+          duration: interval / 3, // Take 1/3 of the beat time to shrink
           useNativeDriver: true,
         }),
       ]);
-      Animated.loop(pulse).start();
+      Animated.loop(pulse).start(); // Keep repeating this animation
     } else {
-      pulseAnim.setValue(1);
+      pulseAnim.setValue(1); // Reset to normal size when not measuring
     }
-  }, [fingerDetected, currentBPM]);
+  }, [fingerDetected, currentBPM]); // Run this whenever finger detection or BPM changes
 
+  // Smooth fade-in effect when starting measurement, fade-out when stopping
   useEffect(() => {
     Animated.timing(fadeAnim, {
-      toValue: isMonitoring ? 1 : 0,
-      duration: 300,
+      toValue: isMonitoring ? 1 : 0, // Fade to visible (1) or invisible (0)
+      duration: 300, // Take 300 milliseconds (0.3 seconds)
       useNativeDriver: true,
     }).start();
-  }, [isMonitoring]);
+  }, [isMonitoring]); // Run whenever monitoring starts or stops
 
+  // ============================================
+  // MAIN PROCESSING FUNCTION
+  // ============================================
+  // This function runs for every camera frame (30 times per second)
+  // It receives the average red light intensity from that frame
   const processFrameData = useCallback((avgRed: number) => {
-    const now = Date.now();
+    const now = Date.now(); // Current time in milliseconds
 
+    // PHASE 1: WAITING FOR FINGER
+    // We're waiting for the user to place their finger over the camera
     if (detectionPhaseRef.current === "waiting") {
+      // Check if finger is detected (light level is high enough)
       if (avgRed > FINGER_DETECTED_THRESHOLD) {
+        // Finger detected! Start the measurement
         setFingerDetected(true);
-        detectionPhaseRef.current = "measuring";
+        detectionPhaseRef.current = "measuring"; // Switch to measuring phase
+
+        // Clear all previous data to start fresh
         dataBufferRef.current = [];
         validReadingsRef.current = [];
         filterRef.current.reset();
         setProgress(0);
       } else {
+        // Still waiting for finger
         setFingerDetected(false);
       }
-      return;
+      return; // Exit early, nothing more to do in this phase
     }
 
+    // PHASE 2: MEASURING
+    // Finger is detected, now we're collecting data
     if (detectionPhaseRef.current === "measuring") {
+      // Check if finger was removed (light level dropped too low)
       if (avgRed < FINGER_LOST_THRESHOLD) {
+        // Finger removed! Stop measuring and go back to waiting
         setFingerDetected(false);
         detectionPhaseRef.current = "waiting";
         setProgress(0);
         return;
       }
 
+      // Filter the signal to remove noise and get a cleaner reading
       const filteredValue = filterRef.current.process(avgRed);
 
+      // MOTION DETECTION: Check if there was sudden movement
+      // Sudden changes in light usually mean the finger moved
       if (dataBufferRef.current.length > 5) {
         const lastValue =
           dataBufferRef.current[dataBufferRef.current.length - 1];
         const change = Math.abs(filteredValue - lastValue);
 
+        // If the change is too big, it's probably movement - discard recent data
         if (change > 10) {
-          dataBufferRef.current = dataBufferRef.current.slice(0, -5);
-          return;
+          dataBufferRef.current = dataBufferRef.current.slice(0, -5); // Remove last 5 readings
+          return; // Skip this frame
         }
       }
 
+      // Add this new reading to our collection
       dataBufferRef.current.push(filteredValue);
 
+      // Keep only the most recent readings (sliding window)
+      // Once we have enough data, remove the oldest reading each time we add a new one
       if (dataBufferRef.current.length > WINDOW_SIZE) {
-        dataBufferRef.current.shift();
+        dataBufferRef.current.shift(); // Remove oldest reading
       }
 
+      // Calculate progress: how close are we to having enough data?
       const currentProgress = Math.min(
-        dataBufferRef.current.length / WINDOW_SIZE,
-        1
+        dataBufferRef.current.length / WINDOW_SIZE, // Fraction of data collected (0 to 1)
+        1 // Cap at 100%
       );
-      setProgress(currentProgress);
+      setProgress(currentProgress); // Update the progress bar
 
+      // CHECK IF READY TO CALCULATE HEART RATE
+      // We need enough data AND we shouldn't calculate too often (wait at least 500ms between calculations)
       if (
-        dataBufferRef.current.length === WINDOW_SIZE &&
-        now - lastProcessTimeRef.current > 500
+        dataBufferRef.current.length === WINDOW_SIZE && // Have enough data?
+        now - lastProcessTimeRef.current > 500 // Been at least 500ms since last calculation?
       ) {
-        lastProcessTimeRef.current = now;
+        lastProcessTimeRef.current = now; // Remember when we did this calculation
 
+        // Step 1: Check if the signal quality is good enough
         const quality = assessSignalQuality(dataBufferRef.current);
 
         if (quality >= MIN_QUALITY_SCORE) {
+          // Step 2: Calculate heart rate using autocorrelation
+          // This finds repeating patterns in the data (the heartbeat rhythm)
           const estimatedBPM = estimateHeartRateAutocorrelation(
             dataBufferRef.current,
             SAMPLING_RATE
           );
 
+          // Step 3: Check if the heart rate is realistic (within human range)
           if (estimatedBPM >= MIN_VALID_BPM && estimatedBPM <= MAX_VALID_BPM) {
+            // It's valid! Add it to our collection of readings
             validReadingsRef.current.push(estimatedBPM);
 
-            const smoothed = weightedMedian(validReadingsRef.current.slice(-7));
-            setCurrentBPM(Math.round(smoothed));
+            // Step 4: Smooth the result by combining recent readings
+            // This reduces random fluctuations and gives a more stable number
+            const smoothed = weightedMedian(validReadingsRef.current.slice(-7)); // Use last 7 readings
+            setCurrentBPM(Math.round(smoothed)); // Display the rounded result
 
+            // Step 5: Calculate all the extra health metrics
+            // These give additional insights into your heart health and signal quality
+
+            // IBI: Find the time between each heartbeat
+            const ibis = calculateIBI(dataBufferRef.current, SAMPLING_RATE);
+            const avgIBI =
+              ibis.length > 0
+                ? ibis.reduce((a, b) => a + b, 0) / ibis.length // Average of all intervals
+                : 0;
+
+            // HRV: Calculate heart rate variability (how much timing varies beat-to-beat)
+            const hrv = calculateHRV(ibis);
+
+            // RR: Estimate breathing rate from the signal
+            const rr = estimateRespirationRate(
+              dataBufferRef.current,
+              SAMPLING_RATE
+            );
+
+            // PI: Calculate how well blood is flowing through the finger
+            const pi = calculatePerfusionIndex(dataBufferRef.current);
+
+            // SNR: Measure signal clarity (how much real signal vs. noise)
+            const snr = calculateSNR(dataBufferRef.current);
+
+            // SQI: Overall quality score combining multiple factors
+            const sqi = calculateSQI(dataBufferRef.current);
+
+            // Store all these metrics to display on screen
+            setAdvancedMetrics({
+              ibi: avgIBI,
+              hrv,
+              rr,
+              pi,
+              snr,
+              sqi,
+            });
+
+            // Step 6: Check if we have enough consistent readings to be confident
+            // We want at least 12 valid readings to ensure accuracy
             if (validReadingsRef.current.length >= 12) {
+              // We have enough! Save the result and complete the measurement
               finalizeMeasurement(Math.round(smoothed));
             }
           }
         }
       }
     }
-  }, []);
+  }, []); // Empty dependency array means this function is created once and never changes
 
   const runOnJsHandler = Worklets.createRunOnJS(processFrameData);
 
+  // ============================================
+  // CAMERA FRAME PROCESSOR
+  // ============================================
+  // This runs 30 times per second, processing each camera frame
   const frameProcessor = useFrameProcessor(
     (frame) => {
-      "worklet";
-      if (!isMonitoring) return;
+      "worklet"; // Special marker: this code runs on a fast background thread
+      if (!isMonitoring) return; // Skip processing if we're not measuring
 
-      // Resize to 16x16 for efficient average calculation
+      // Resize the camera image to a tiny 16x16 pixel square
+      // Why? We only need the average color, so this makes it much faster
       const resized = resize(frame, {
         scale: { width: 16, height: 16 },
-        pixelFormat: "rgb",
-        dataType: "uint8",
+        pixelFormat: "rgb", // Get red, green, blue color values
+        dataType: "uint8", // Numbers from 0-255
       });
 
-      // Calculate average Red channel intensity
+      // Calculate the average RED color across all pixels
+      // Red light shows blood flow best (that's why medical devices use red LEDs)
       let totalRed = 0;
-      const numPixels = resized.length / 3;
+      const numPixels = resized.length / 3; // Divide by 3 because each pixel has R, G, B
       for (let i = 0; i < resized.length; i += 3) {
-        totalRed += resized[i];
+        // Jump by 3 to get only Red values
+        totalRed += resized[i]; // resized[i] is the Red channel
       }
-      const avgRed = totalRed / numPixels;
+      const avgRed = totalRed / numPixels; // Average red intensity (0-255)
 
+      // Send this average to our processing function
       runOnJsHandler(avgRed);
     },
-    [isMonitoring, runOnJsHandler, resize]
+    [isMonitoring, runOnJsHandler, resize] // Re-create this function if these values change
   );
 
+  // ============================================
+  // START MONITORING
+  // ============================================
+  // Called when user taps "Start Measurement" button
   const startMonitoring = useCallback(async () => {
+    // First, check if we have camera permission
     if (!hasPermission) {
-      const granted = await requestPermission();
-      if (!granted) return;
+      const granted = await requestPermission(); // Ask user for permission
+      if (!granted) return; // They said no, so exit
     }
-    filterRef.current.reset();
-    dataBufferRef.current = [];
-    validReadingsRef.current = [];
-    setCurrentBPM(null);
-    setFingerDetected(false);
-    detectionPhaseRef.current = "waiting";
-    setIsMonitoring(true);
+
+    // Reset everything to start fresh
+    filterRef.current.reset(); // Clear the filter
+    dataBufferRef.current = []; // Clear all previous readings
+    validReadingsRef.current = []; // Clear previous heart rate calculations
+    setCurrentBPM(null); // Clear displayed heart rate
+    setAdvancedMetrics(null); // Clear metrics
+    setFingerDetected(false); // Not detected yet
+    detectionPhaseRef.current = "waiting"; // Start in waiting phase
+    setIsMonitoring(true); // Turn on the camera and flashlight
   }, [hasPermission, requestPermission]);
 
+  // ============================================
+  // STOP MONITORING
+  // ============================================
+  // Called when user taps "Cancel" button or measurement is complete
   const stopMonitoring = useCallback(() => {
-    setIsMonitoring(false);
-    setFingerDetected(false);
-    detectionPhaseRef.current = "waiting";
-    setProgress(0);
+    setIsMonitoring(false); // Turn off camera and flashlight
+    setFingerDetected(false); // Reset finger detection
+    detectionPhaseRef.current = "waiting"; // Go back to waiting state
+    setProgress(0); // Reset progress bar
   }, []);
 
+  // ============================================
+  // FINALIZE MEASUREMENT
+  // ============================================
+  // Called when we have a confident heart rate reading
+  // Saves the result to the database and shows it to the user
   const finalizeMeasurement = async (finalBPM: number) => {
-    stopMonitoring();
-    setIsSaving(true);
-    const { error } = await addMeasurement(finalBPM);
-    setIsSaving(false);
+    stopMonitoring(); // Turn off camera and flashlight
+    setIsSaving(true); // Show saving indicator
 
+    // Try to save the measurement to the database
+    const { error } = await addMeasurement(finalBPM);
+    setIsSaving(false); // Hide saving indicator
+
+    // Show the result to the user in a popup
     if (error) {
+      // Saving failed, but still show the result
       Alert.alert(
         "Recorded",
         `${finalBPM} BPM (Save Failed: ${error.message})`
       );
     } else {
+      // Success! Show the heart rate
       Alert.alert("Success", `${finalBPM} BPM`);
     }
   };
@@ -311,6 +464,99 @@ export default function HeartRateMonitor() {
                     <View style={styles.pulseIndicator} />
                     <Text style={styles.statusText}>Measuring...</Text>
                   </View>
+                )}
+
+                {/* Advanced Metrics */}
+                {advancedMetrics && (
+                  <ScrollView
+                    style={styles.metricsScroll}
+                    showsVerticalScrollIndicator={false}
+                  >
+                    <View style={styles.metricsGrid}>
+                      {/* IBI */}
+                      <View style={styles.metricCard}>
+                        <Text style={styles.metricLabel}>IBI</Text>
+                        <Text style={styles.metricValue}>
+                          {advancedMetrics.ibi.toFixed(0)}
+                        </Text>
+                        <Text style={styles.metricUnit}>ms</Text>
+                      </View>
+
+                      {/* HRV - SDNN */}
+                      <View style={styles.metricCard}>
+                        <Text style={styles.metricLabel}>SDNN</Text>
+                        <Text style={styles.metricValue}>
+                          {advancedMetrics.hrv.sdnn.toFixed(1)}
+                        </Text>
+                        <Text style={styles.metricUnit}>ms</Text>
+                      </View>
+
+                      {/* HRV - RMSSD */}
+                      <View style={styles.metricCard}>
+                        <Text style={styles.metricLabel}>RMSSD</Text>
+                        <Text style={styles.metricValue}>
+                          {advancedMetrics.hrv.rmssd.toFixed(1)}
+                        </Text>
+                        <Text style={styles.metricUnit}>ms</Text>
+                      </View>
+
+                      {/* HRV - pNN50 */}
+                      <View style={styles.metricCard}>
+                        <Text style={styles.metricLabel}>pNN50</Text>
+                        <Text style={styles.metricValue}>
+                          {advancedMetrics.hrv.pnn50.toFixed(1)}
+                        </Text>
+                        <Text style={styles.metricUnit}>%</Text>
+                      </View>
+
+                      {/* HRV - LF/HF */}
+                      <View style={styles.metricCard}>
+                        <Text style={styles.metricLabel}>LF/HF</Text>
+                        <Text style={styles.metricValue}>
+                          {advancedMetrics.hrv.lfHfRatio.toFixed(2)}
+                        </Text>
+                        <Text style={styles.metricUnit}>ratio</Text>
+                      </View>
+
+                      {/* RR */}
+                      <View style={styles.metricCard}>
+                        <Text style={styles.metricLabel}>RR</Text>
+                        <Text style={styles.metricValue}>
+                          {advancedMetrics.rr > 0
+                            ? advancedMetrics.rr.toFixed(1)
+                            : "--"}
+                        </Text>
+                        <Text style={styles.metricUnit}>br/min</Text>
+                      </View>
+
+                      {/* PI */}
+                      <View style={styles.metricCard}>
+                        <Text style={styles.metricLabel}>PI</Text>
+                        <Text style={styles.metricValue}>
+                          {advancedMetrics.pi.toFixed(2)}
+                        </Text>
+                        <Text style={styles.metricUnit}>%</Text>
+                      </View>
+
+                      {/* SNR */}
+                      <View style={styles.metricCard}>
+                        <Text style={styles.metricLabel}>SNR</Text>
+                        <Text style={styles.metricValue}>
+                          {advancedMetrics.snr.toFixed(1)}
+                        </Text>
+                        <Text style={styles.metricUnit}>dB</Text>
+                      </View>
+
+                      {/* SQI */}
+                      <View style={styles.metricCard}>
+                        <Text style={styles.metricLabel}>SQI</Text>
+                        <Text style={styles.metricValue}>
+                          {advancedMetrics.sqi.toFixed(0)}
+                        </Text>
+                        <Text style={styles.metricUnit}>%</Text>
+                      </View>
+                    </View>
+                  </ScrollView>
                 )}
 
                 <View style={styles.progressContainer}>
@@ -606,6 +852,47 @@ const styles = StyleSheet.create({
     color: "#a0a0a0",
     fontSize: 13,
     fontWeight: "600",
+  },
+
+  // Metrics display
+  metricsScroll: {
+    maxHeight: 200,
+    width: "100%",
+    marginBottom: 16,
+  },
+  metricsGrid: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 8,
+    justifyContent: "center",
+    paddingVertical: 8,
+  },
+  metricCard: {
+    backgroundColor: "rgba(233, 69, 96, 0.1)",
+    borderWidth: 1,
+    borderColor: "rgba(233, 69, 96, 0.2)",
+    borderRadius: 12,
+    padding: 8,
+    minWidth: 70,
+    alignItems: "center",
+  },
+  metricLabel: {
+    color: "#920c0cff",
+    fontSize: 10,
+    fontWeight: "700",
+    letterSpacing: 0.5,
+    marginBottom: 2,
+  },
+  metricValue: {
+    color: "#fff",
+    fontSize: 18,
+    fontWeight: "700",
+  },
+  metricUnit: {
+    color: "#a0a0a0",
+    fontSize: 9,
+    fontWeight: "500",
+    marginTop: 1,
   },
 
   cancelBtn: {

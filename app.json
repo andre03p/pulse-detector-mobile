@@ -11,8 +11,10 @@
     "ios": {
       "supportsTablet": true,
       "infoPlist": {
-        "NSCameraUsageDescription": "This app requires camera access to measure your heart rate using your finger over the camera and flash."
-      }
+        "NSCameraUsageDescription": "This app requires camera access to measure your heart rate using your finger over the camera and flash.",
+        "ITSAppUsesNonExemptEncryption": false
+      },
+      "bundleIdentifier": "com.andre03p.pulsedetector"
     },
     "android": {
       "adaptiveIcon": {

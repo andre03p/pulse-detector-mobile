@@ -38,58 +38,64 @@ export default function Profile() {
   const footerHeight = 80 + (insets.bottom || 12);
 
   return (
-    <ScrollView style={[styles.container, { paddingBottom: footerHeight }]}>
-      <LinearGradient colors={["#0d1321", "#1d2d44"]} style={styles.header}>
-        <View style={styles.avatarContainer}>
-          <Text style={styles.avatarText}>
-            {authState?.user?.email?.charAt(0).toUpperCase() || "U"}
+    <View style={styles.container}>
+      <ScrollView
+        style={styles.scrollView}
+        contentContainerStyle={{ paddingBottom: footerHeight }}
+        showsVerticalScrollIndicator={false}
+      >
+        <LinearGradient
+          colors={["#0d1321", "#1d2d44"]}
+          style={[styles.header, { paddingTop: insets.top + 16 }]}
+        >
+          <View style={styles.avatarContainer}>
+            <Text style={styles.avatarText}>
+              {authState?.user?.email?.charAt(0).toUpperCase() || "U"}
+            </Text>
+          </View>
+          <Text style={styles.name}>
+            {authState?.user?.user_metadata?.display_name
+              ? `Hello, ${authState.user.user_metadata.display_name}!`
+              : "Welcome!"}
           </Text>
+          <Text style={styles.email}>{authState?.user?.email}</Text>
+        </LinearGradient>
+
+        <View style={styles.content}>
+          <View style={styles.section}>
+            <Text style={styles.sectionTitle}>Account Information</Text>
+
+            <View style={styles.infoCard}>
+              <View style={styles.infoRow}>
+                <Text style={styles.infoLabel}>Account Created</Text>
+                <Text style={styles.infoValue}>
+                  {authState?.user?.created_at
+                    ? new Date(authState.user.created_at).toLocaleDateString()
+                    : "N/A"}
+                </Text>
+              </View>
+              <View style={styles.divider} />
+              <View style={styles.infoRow}>
+                <Text style={styles.infoLabel}>Email Verified</Text>
+                <Text style={styles.infoValue}>
+                  {authState?.user?.email_confirmed_at
+                    ? "Yes ✓"
+                    : "Not verified"}
+                </Text>
+              </View>
+            </View>
+          </View>
+
+          <TouchableOpacity style={styles.logoutButton} onPress={handleLogout}>
+            <Text style={styles.logoutButtonText}>Logout</Text>
+          </TouchableOpacity>
+
+          <View style={styles.footer}>
+            <Text style={styles.footerText}>PulseDetector v1.0.0</Text>
+          </View>
         </View>
-        <Text style={styles.name}>
-          {authState?.user?.user_metadata?.display_name
-            ? `Hello, ${authState.user.user_metadata.display_name}!`
-            : "Welcome!"}
-        </Text>
-        {/* <Text style={styles.userId}>
-          User ID: {authState?.user?.id?.slice(0, 8)}...
-        </Text> */}
-      </LinearGradient>
-
-      <View style={styles.section}>
-        <Text style={styles.sectionTitle}>Account Information</Text>
-
-        <View style={styles.infoCard}>
-          <View style={styles.infoRow}>
-            <Text style={styles.infoLabel}>Email</Text>
-            <Text style={styles.infoValue}>{authState?.user?.email}</Text>
-          </View>
-          <View style={styles.divider} />
-          <View style={styles.infoRow}>
-            <Text style={styles.infoLabel}>Account Created</Text>
-            <Text style={styles.infoValue}>
-              {authState?.user?.created_at
-                ? new Date(authState.user.created_at).toLocaleDateString()
-                : "N/A"}
-            </Text>
-          </View>
-          <View style={styles.divider} />
-          <View style={styles.infoRow}>
-            <Text style={styles.infoLabel}>Email Verified</Text>
-            <Text style={styles.infoValue}>
-              {authState?.user?.email_confirmed_at ? "Yes ✓" : "Not verified"}
-            </Text>
-          </View>
-        </View>
-      </View>
-
-      <TouchableOpacity style={styles.logoutButton} onPress={handleLogout}>
-        <Text style={styles.logoutButtonText}>Logout</Text>
-      </TouchableOpacity>
-
-      <View style={[styles.footer, { paddingBottom: footerHeight }]}>
-        <Text style={styles.footerText}>PulseDetector v1.0.0</Text>
-      </View>
-    </ScrollView>
+      </ScrollView>
+    </View>
   );
 }
 
@@ -97,14 +103,14 @@ const styles = StyleSheet.create({
   container: {
     flex: 1,
     backgroundColor: "#050000",
-    paddingBottom: 80,
+  },
+  scrollView: {
+    flex: 1,
   },
   header: {
+    paddingHorizontal: 20,
+    paddingBottom: 30,
     alignItems: "center",
-    paddingVertical: 40,
-    backgroundColor: "#0d1321",
-    borderBottomWidth: 1,
-    borderBottomColor: "#3e5c76",
   },
   avatarContainer: {
     width: 100,
@@ -113,10 +119,9 @@ const styles = StyleSheet.create({
     backgroundColor: "#3e5c76",
     justifyContent: "center",
     alignItems: "center",
-    marginBottom: 16,
-    marginTop: 20,
     borderWidth: 3,
-    borderColor: "#1d2d44",
+    borderColor: "#748cab",
+    marginBottom: 16,
   },
   avatarText: {
     fontSize: 40,
@@ -127,33 +132,33 @@ const styles = StyleSheet.create({
     fontSize: 24,
     fontWeight: "bold",
     color: "#f0ebd8",
-    marginBottom: 4,
+    marginBottom: 8,
+    textAlign: "center",
   },
   email: {
-    fontSize: 18,
-    fontWeight: "600",
-    color: "#f0ebd8",
-    marginBottom: 4,
-  },
-  userId: {
-    fontSize: 12,
+    fontSize: 14,
     color: "#748cab",
+    textAlign: "center",
+  },
+  content: {
+    flex: 1,
+    paddingHorizontal: 20,
   },
   section: {
-    padding: 20,
+    marginTop: 24,
+    marginBottom: 20,
   },
   sectionTitle: {
-    fontSize: 20,
+    fontSize: 18,
     fontWeight: "bold",
     color: "#f0ebd8",
     marginBottom: 16,
-    textAlign: "center",
   },
   infoCard: {
     backgroundColor: "#0d1321",
-    borderRadius: 12,
-    padding: 16,
-    borderWidth: 1,
+    borderRadius: 16,
+    padding: 20,
+    borderWidth: 2,
     borderColor: "#3e5c76",
   },
   infoRow: {
@@ -163,29 +168,32 @@ const styles = StyleSheet.create({
     paddingVertical: 12,
   },
   infoLabel: {
-    fontSize: 14,
+    fontSize: 15,
     color: "#748cab",
     fontWeight: "500",
   },
   infoValue: {
-    fontSize: 14,
+    fontSize: 15,
     color: "#f0ebd8",
     fontWeight: "600",
     flex: 1,
     textAlign: "right",
+    marginLeft: 16,
   },
   divider: {
     height: 1,
     backgroundColor: "#3e5c76",
+    opacity: 0.5,
   },
   logoutButton: {
     backgroundColor: "#3e5c76",
     borderRadius: 12,
     padding: 16,
-    marginHorizontal: 20,
-    marginTop: 40,
+    marginTop: 20,
     alignItems: "center",
-    shadowColor: "#0d1321",
+    borderWidth: 2,
+    borderColor: "#748cab",
+    shadowColor: "#000",
     shadowOffset: {
       width: 0,
       height: 2,
@@ -201,12 +209,12 @@ const styles = StyleSheet.create({
   },
   footer: {
     alignItems: "center",
-    paddingVertical: 30,
+    paddingVertical: 40,
+    marginTop: 20,
   },
   footerText: {
     fontSize: 12,
     color: "#748cab",
-    bottom: 30,
-    position: "absolute",
+    opacity: 0.6,
   },
 });
