@@ -13,50 +13,104 @@ import {
 } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import {
+  createAlarm as createAlarmRow,
+  deleteAlarm as deleteAlarmRow,
+  fetchAlarms,
+  updateAlarm as updateAlarmRow,
+} from "../../lib/supabaseQueries";
+import {
   cancelAlarmNotification,
   registerForPushNotificationsAsync,
   scheduleAlarmNotification,
 } from "../../utils/notifications";
 
+type Alarm = {
+  id: number;
+  time: string;
+  label: string;
+  enabled: boolean;
+  repeat: string[];
+};
+
 export default function AlarmRemindersApp() {
   const insets = useSafeAreaInsets();
-  const [alarms, setAlarms] = useState([
-    {
-      id: 1,
-      time: "08:00",
-      label: "Morning heart rate check",
-      enabled: true,
-      repeat: ["Mon", "Tue", "Wed", "Thu", "Fri"],
-    },
-    {
-      id: 2,
-      time: "20:00",
-      label: "Evening measurement",
-      enabled: true,
-      repeat: ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"],
-    },
-  ]);
+  const [alarms, setAlarms] = useState<Alarm[]>([]);
 
-  // Request notification permissions on mount
+  const [hydrated, setHydrated] = useState(false);
+  const [notificationsEnabled, setNotificationsEnabled] = useState(false);
+
   useEffect(() => {
-    registerForPushNotificationsAsync();
+    let cancelled = false;
+    (async () => {
+      try {
+        const { data, error } = await fetchAlarms();
+        if (error) {
+          console.warn("Failed to fetch alarms", error);
+          return;
+        }
+
+        const mapped: Alarm[] = (data ?? []).map((row) => ({
+          id: row.id,
+          time: row.time,
+          label: row.label,
+          enabled: row.enabled,
+          repeat: row.repeat_days ?? [],
+        }));
+
+        if (!cancelled) {
+          setAlarms(mapped);
+        }
+      } catch (e) {
+        console.warn("Failed to load alarms", e);
+      } finally {
+        if (!cancelled) setHydrated(true);
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
-  // Schedule notifications for enabled alarms
   useEffect(() => {
-    alarms.forEach((alarm) => {
-      if (alarm.enabled) {
-        scheduleAlarmNotification(
-          alarm.id,
-          alarm.time,
-          alarm.label,
-          alarm.repeat
-        );
-      } else {
-        cancelAlarmNotification(alarm.id);
+    let cancelled = false;
+    (async () => {
+      const ok = await registerForPushNotificationsAsync();
+      if (!cancelled) setNotificationsEnabled(Boolean(ok));
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!hydrated || !notificationsEnabled) return;
+
+    let cancelled = false;
+    (async () => {
+      for (const alarm of alarms) {
+        if (cancelled) return;
+        try {
+          if (alarm.enabled) {
+            await scheduleAlarmNotification(
+              alarm.id,
+              alarm.time,
+              alarm.label,
+              alarm.repeat,
+            );
+          } else {
+            await cancelAlarmNotification(alarm.id);
+          }
+        } catch (e) {
+          console.warn("Failed to sync alarm notification", { alarm, e });
+        }
       }
-    });
-  }, [alarms]);
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [alarms, hydrated, notificationsEnabled]);
 
   const [showAddForm, setShowAddForm] = useState(false);
   const [newTime, setNewTime] = useState("");
@@ -66,12 +120,11 @@ export default function AlarmRemindersApp() {
   const days = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
 
   const addAlarm = () => {
-    // Validate time format (HH:MM)
     const timeRegex = /^([0-1]?[0-9]|2[0-3]):[0-5][0-9]$/;
     if (!timeRegex.test(newTime)) {
       Alert.alert(
         "Invalid Time",
-        "Please enter time in HH:MM format (e.g., 09:30)"
+        "Please enter time in HH:MM format (e.g., 09:30)",
       );
       return;
     }
@@ -81,35 +134,56 @@ export default function AlarmRemindersApp() {
       return;
     }
 
-    const newAlarm = {
-      id: Date.now(),
-      time: newTime,
-      label: newLabel.trim(),
-      enabled: true,
-      repeat: selectedDays,
-    };
-    setAlarms([...alarms, newAlarm]);
-    setNewTime("");
-    setNewLabel("");
-    setSelectedDays([]);
-    setShowAddForm(false);
+    (async () => {
+      const { data, error } = await createAlarmRow({
+        time: newTime,
+        label: newLabel.trim(),
+        enabled: true,
+        repeat_days: selectedDays,
+      });
 
-    // Schedule the notification
-    scheduleAlarmNotification(
-      newAlarm.id,
-      newAlarm.time,
-      newAlarm.label,
-      newAlarm.repeat
-    );
-    Alert.alert("Success", "Reminder added and notification scheduled!");
+      if (error || !data) {
+        Alert.alert(
+          "Error",
+          error?.message || "Failed to create reminder. Please try again.",
+        );
+        return;
+      }
+
+      const created: Alarm = {
+        id: data.id,
+        time: data.time,
+        label: data.label,
+        enabled: data.enabled,
+        repeat: data.repeat_days ?? [],
+      };
+
+      setAlarms((prev) => [...prev, created]);
+      setNewTime("");
+      setNewLabel("");
+      setSelectedDays([]);
+      setShowAddForm(false);
+
+      Alert.alert("Success", "Reminder added and notification scheduled!");
+    })();
   };
 
   const toggleAlarm = (id: number) => {
-    setAlarms(
-      alarms.map((alarm) =>
-        alarm.id === id ? { ...alarm, enabled: !alarm.enabled } : alarm
-      )
+    let nextEnabled = false;
+    setAlarms((prev) =>
+      prev.map((alarm) => {
+        if (alarm.id !== id) return alarm;
+        nextEnabled = !alarm.enabled;
+        return { ...alarm, enabled: nextEnabled };
+      }),
     );
+
+    (async () => {
+      const { error } = await updateAlarmRow(id, { enabled: nextEnabled });
+      if (error) {
+        console.warn("Failed to update alarm", error);
+      }
+    })();
   };
 
   const deleteAlarm = (id: number) => {
@@ -122,17 +196,27 @@ export default function AlarmRemindersApp() {
           text: "Delete",
           style: "destructive",
           onPress: () => {
-            cancelAlarmNotification(id);
-            setAlarms(alarms.filter((alarm) => alarm.id !== id));
+            (async () => {
+              await cancelAlarmNotification(id);
+              const { error } = await deleteAlarmRow(id);
+              if (error) {
+                Alert.alert(
+                  "Error",
+                  error.message || "Failed to delete reminder.",
+                );
+                return;
+              }
+              setAlarms((prev) => prev.filter((alarm) => alarm.id !== id));
+            })();
           },
         },
-      ]
+      ],
     );
   };
 
   const toggleDay = (day: string) => {
     setSelectedDays((prev) =>
-      prev.includes(day) ? prev.filter((d) => d !== day) : [...prev, day]
+      prev.includes(day) ? prev.filter((d) => d !== day) : [...prev, day],
     );
   };
 

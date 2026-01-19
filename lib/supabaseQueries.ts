@@ -10,7 +10,7 @@ const getCurrentUser = async () => {
 export const createUserProfile = async (
   authUuid: string,
   email: string,
-  name?: string
+  name?: string,
 ) => {
   try {
     const { data: existing } = await supabase
@@ -23,7 +23,7 @@ export const createUserProfile = async (
       return { data: existing, error: null };
     }
 
-    // Create new user profile with auth_uuid (no password - managed by Supabase Auth)
+    // create new user profile with auth_uuid (no password - managed by Supabase Auth)
     const { data, error } = await supabase
       .from("User")
       .insert({
@@ -46,7 +46,7 @@ export const createUserProfile = async (
   }
 };
 
-const getUserId = async (): Promise<number | null> => {
+export const getUserId = async (): Promise<number | null> => {
   const authUser = await getCurrentUser();
   if (!authUser) return null;
 
@@ -61,7 +61,7 @@ const getUserId = async (): Promise<number | null> => {
     const { data: newUser, error: createError } = await createUserProfile(
       authUser.id,
       authUser.email || "",
-      authUser.user_metadata?.display_name
+      authUser.user_metadata?.display_name,
     );
 
     if (createError || !newUser) {
@@ -78,6 +78,101 @@ const getUserId = async (): Promise<number | null> => {
   }
 
   return data.id;
+};
+
+export type AlarmRow = {
+  id: number;
+  userId: number;
+  time: string;
+  label: string;
+  enabled: boolean;
+  repeat_days: string[];
+  created_at?: string;
+  updated_at?: string;
+};
+
+export const fetchAlarms = async () => {
+  const userId = await getUserId();
+  if (!userId) return { data: null, error: { message: "Not authenticated" } };
+
+  const { data, error } = await supabase
+    .from("Alarm")
+    .select("*")
+    .eq("userId", userId)
+    .order("created_at", { ascending: true });
+
+  if (error) {
+    console.error("Error fetching alarms:", error);
+  }
+
+  return { data: data as AlarmRow[] | null, error };
+};
+
+export const createAlarm = async (alarm: {
+  time: string;
+  label: string;
+  enabled: boolean;
+  repeat_days: string[];
+}) => {
+  const userId = await getUserId();
+  if (!userId) return { data: null, error: { message: "Not authenticated" } };
+
+  const { data, error } = await supabase
+    .from("Alarm")
+    .insert({
+      userId,
+      time: alarm.time,
+      label: alarm.label,
+      enabled: alarm.enabled,
+      repeat_days: alarm.repeat_days,
+    })
+    .select("*")
+    .single();
+
+  if (error) {
+    console.error("Error creating alarm:", error);
+  }
+
+  return { data: data as AlarmRow | null, error };
+};
+
+export const updateAlarm = async (
+  alarmId: number,
+  patch: Partial<Pick<AlarmRow, "time" | "label" | "enabled" | "repeat_days">>,
+) => {
+  const userId = await getUserId();
+  if (!userId) return { data: null, error: { message: "Not authenticated" } };
+
+  const { data, error } = await supabase
+    .from("Alarm")
+    .update(patch)
+    .eq("id", alarmId)
+    .eq("userId", userId)
+    .select("*")
+    .single();
+
+  if (error) {
+    console.error("Error updating alarm:", error);
+  }
+
+  return { data: data as AlarmRow | null, error };
+};
+
+export const deleteAlarm = async (alarmId: number) => {
+  const userId = await getUserId();
+  if (!userId) return { data: null, error: { message: "Not authenticated" } };
+
+  const { error } = await supabase
+    .from("Alarm")
+    .delete()
+    .eq("id", alarmId)
+    .eq("userId", userId);
+
+  if (error) {
+    console.error("Error deleting alarm:", error);
+  }
+
+  return { data: null, error };
 };
 
 export const fetchMeasurements = async () => {
@@ -156,12 +251,12 @@ export const getHeartRateStats = async () => {
 
   const bpms = readings.map((r: any) => r.heartRate);
   const avgBpm = Math.round(
-    bpms.reduce((sum: number, bpm: number) => sum + bpm, 0) / bpms.length
+    bpms.reduce((sum: number, bpm: number) => sum + bpm, 0) / bpms.length,
   );
   const weekAgo = new Date();
   weekAgo.setDate(weekAgo.getDate() - 7);
   const weeklyReadings = readings.filter(
-    (r: any) => new Date(r.created_at) >= weekAgo
+    (r: any) => new Date(r.created_at) >= weekAgo,
   ).length;
 
   return {

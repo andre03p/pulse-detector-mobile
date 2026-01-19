@@ -54,10 +54,14 @@ export async function scheduleAlarmNotification(
   alarmId: number,
   time: string,
   label: string,
-  repeatDays: string[]
+  repeatDays: string[],
 ) {
   // Parse the time (format: "HH:MM")
   const [hours, minutes] = time.split(":").map(Number);
+
+  if (Number.isNaN(hours) || Number.isNaN(minutes)) {
+    throw new Error(`Invalid time format: ${time}`);
+  }
 
   // Cancel existing notifications for this alarm
   await cancelAlarmNotification(alarmId);
@@ -73,6 +77,16 @@ export async function scheduleAlarmNotification(
     Sat: 7,
   };
 
+  const content: Notifications.NotificationContentInput = {
+    title: "Heart Rate Reminder",
+    body: label,
+    sound: true,
+    priority: Notifications.AndroidNotificationPriority.HIGH,
+  };
+
+  const androidChannel =
+    Platform.OS === "android" ? { channelId: "default" } : {};
+
   if (repeatDays.length === 0) {
     // One-time notification
     const triggerDate = new Date();
@@ -84,36 +98,37 @@ export async function scheduleAlarmNotification(
     }
 
     await Notifications.scheduleNotificationAsync({
-      identifier: `alarm-${alarmId}`,
-      content: {
-        title: "❤️ Heart Rate Reminder",
-        body: label,
-        sound: true,
-        priority: Notifications.AndroidNotificationPriority.HIGH,
-      },
+      identifier: `alarm-${alarmId}-once`,
+      content,
       trigger: {
         type: Notifications.SchedulableTriggerInputTypes.DATE,
         date: triggerDate,
+        ...androidChannel,
       },
     });
-  } else {
-    // Repeating notification - schedule daily and check day of week
-    await Notifications.scheduleNotificationAsync({
-      identifier: `alarm-${alarmId}`,
-      content: {
-        title: "❤️ Heart Rate Reminder",
-        body: label,
-        sound: true,
-        priority: Notifications.AndroidNotificationPriority.HIGH,
-        data: { repeatDays }, // Store which days to repeat
-      },
-      trigger: {
-        type: Notifications.SchedulableTriggerInputTypes.DAILY,
-        hour: hours,
-        minute: minutes,
-      },
-    });
+    return;
   }
+
+  // Repeating notification on selected weekdays (weekly triggers)
+  const uniqueDays = Array.from(new Set(repeatDays));
+  await Promise.all(
+    uniqueDays
+      .map((day) => dayMap[day])
+      .filter((weekday): weekday is number => typeof weekday === "number")
+      .map((weekday) =>
+        Notifications.scheduleNotificationAsync({
+          identifier: `alarm-${alarmId}-w${weekday}`,
+          content,
+          trigger: {
+            type: Notifications.SchedulableTriggerInputTypes.WEEKLY,
+            weekday,
+            hour: hours,
+            minute: minutes,
+            ...androidChannel,
+          },
+        }),
+      ),
+  );
 }
 
 /**
@@ -125,9 +140,12 @@ export async function cancelAlarmNotification(alarmId: number) {
 
   // Cancel the alarm notification
   for (const notification of scheduledNotifications) {
-    if (notification.identifier === `alarm-${alarmId}`) {
+    if (
+      notification.identifier === `alarm-${alarmId}` ||
+      notification.identifier.startsWith(`alarm-${alarmId}-`)
+    ) {
       await Notifications.cancelScheduledNotificationAsync(
-        notification.identifier
+        notification.identifier,
       );
     }
   }
