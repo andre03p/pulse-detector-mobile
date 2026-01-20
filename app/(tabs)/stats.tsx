@@ -54,7 +54,7 @@ export default function Stats() {
   useFocusEffect(
     useCallback(() => {
       loadStats();
-    }, [])
+    }, []),
   );
 
   const handleHeartRate = () => {
@@ -104,14 +104,14 @@ export default function Stats() {
       label: "100 - 130",
       description: "Warm Up / Light Effort",
       color: "#4caf50",
-    }, // Green
+    },
     {
       label: "130 - 150",
       description: "Fat Burn / Moderate",
       color: "#fbc02d",
-    }, // Yellow/Gold
-    { label: "150 - 170", description: "Cardio / Hard", color: "#f57c00" }, // Orange
-    { label: "170+", description: "Peak / Max Effort", color: "#d32f2f" }, // Red
+    },
+    { label: "150 - 170", description: "Cardio / Hard", color: "#f57c00" },
+    { label: "170+", description: "Peak / Max Effort", color: "#d32f2f" },
   ];
 
   return (
@@ -384,8 +384,8 @@ const styles = StyleSheet.create({
   infoCard: {
     borderRadius: 16,
     padding: 20,
-    elevation: 4, // Shadow for Android
-    shadowColor: "#000", // Shadow for iOS
+    elevation: 4,
+    shadowColor: "#000",
     shadowOffset: { width: 0, height: 2 },
     shadowOpacity: 0.1,
     shadowRadius: 4,
@@ -410,7 +410,7 @@ const styles = StyleSheet.create({
   leftContainer: {
     flexDirection: "row",
     alignItems: "center",
-    width: 100, // Fixed width to align the descriptions perfectly
+    width: 100,
   },
   infoIndicator: {
     width: 12,
@@ -427,7 +427,7 @@ const styles = StyleSheet.create({
     fontSize: 14,
     color: "#fbf7f7ff",
     flex: 1,
-    textAlign: "right", // Aligns description to the right
+    textAlign: "right",
   },
   loadingText: {
     fontSize: 16,

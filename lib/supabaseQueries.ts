@@ -23,7 +23,7 @@ export const createUserProfile = async (
       return { data: existing, error: null };
     }
 
-    // create new user profile with auth_uuid (no password - managed by Supabase Auth)
+    // create new user profile with auth_uuid (no password, managed by Supabase Auth)
     const { data, error } = await supabase
       .from("User")
       .insert({

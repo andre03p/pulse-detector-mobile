@@ -29,7 +29,7 @@ export default function VerifyEmail() {
   const [accountCreated, setAccountCreated] = useState(false);
   const { onRegister } = useAuth();
 
-  // Create account on mount to trigger confirmation email
+  // create account on mount to trigger confirmation email
   React.useEffect(() => {
     const createAccount = async () => {
       if (!email || !name || !password || accountCreated) return;
@@ -67,7 +67,7 @@ export default function VerifyEmail() {
     if (!email) {
       Alert.alert(
         "Error",
-        "Missing registration information. Please try again."
+        "Missing registration information. Please try again.",
       );
       router.replace("/(auth)/register");
       return;
@@ -76,7 +76,7 @@ export default function VerifyEmail() {
     setLoading(true);
 
     try {
-      // Only verify the OTP, don't create account again
+      // verify the OTP, don't create account again
       const { data, error } =
         await require("../../lib/supabase").supabase.auth.verifyOtp({
           email: email,
@@ -88,7 +88,7 @@ export default function VerifyEmail() {
         console.error("OTP verification error:", error);
         Alert.alert("Error", "Invalid verification code. Please try again.");
       } else {
-        // Sign out after verification so user can log in fresh
+        // sign out after verification
         await require("../../lib/supabase").supabase.auth.signOut();
 
         Alert.alert(
@@ -99,7 +99,7 @@ export default function VerifyEmail() {
               text: "OK",
               onPress: () => router.replace("/(auth)/login"),
             },
-          ]
+          ],
         );
       }
     } catch (error: any) {
@@ -127,7 +127,7 @@ export default function VerifyEmail() {
         ) {
           Alert.alert(
             "Please Wait",
-            "Please wait a moment before requesting another code."
+            "Please wait a moment before requesting another code.",
           );
         } else {
           Alert.alert("Error", error.message || "Failed to resend code");

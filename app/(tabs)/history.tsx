@@ -34,8 +34,6 @@ export default function History() {
   const [refreshing, setRefreshing] = useState(false);
   const insets = useSafeAreaInsets();
 
-  // Corrected export functions with proper dependency checks
-
   const escapeCsvValue = (value: string) => {
     const needsQuotes =
       value.includes(",") || value.includes("\n") || value.includes('"');
@@ -44,7 +42,6 @@ export default function History() {
   };
 
   const shareFile = async (uri: string) => {
-    // Try expo-sharing first (better UX on mobile)
     try {
       const Sharing = await import("expo-sharing");
       if (
@@ -61,7 +58,6 @@ export default function History() {
       console.log("expo-sharing not available");
     }
 
-    // Fallback to React Native Share
     try {
       if (Platform.OS === "ios") {
         await Share.share({ url: uri });
@@ -107,7 +103,7 @@ export default function History() {
           String(h.id),
           escapeCsvValue(new Date(h.created_at).toISOString()),
           String(h.heartRate),
-        ].join(",")
+        ].join(","),
       );
       const csv = [header, ...rows].join("\n");
 
@@ -128,7 +124,6 @@ export default function History() {
     try {
       const Print = await import("expo-print");
 
-      // Check if expo-print is properly installed
       if (
         !Print?.printToFileAsync ||
         typeof Print.printToFileAsync !== "function"
@@ -136,7 +131,7 @@ export default function History() {
         Alert.alert(
           "PDF Export Unavailable",
           "The expo-print package is not installed. Please run:\n\nnpx expo install expo-print\n\nThen rebuild your app.",
-          [{ text: "OK" }]
+          [{ text: "OK" }],
         );
         return;
       }
@@ -226,7 +221,7 @@ export default function History() {
       console.error("Export PDF error:", error);
       Alert.alert(
         "Export failed",
-        "Could not export data as PDF. Make sure expo-print is installed:\n\nnpx expo install expo-print"
+        "Could not export data as PDF. Make sure expo-print is installed:\n\nnpx expo install expo-print",
       );
     }
   };
@@ -235,7 +230,7 @@ export default function History() {
     if (Platform.OS === "web") {
       Alert.alert(
         "Export not supported",
-        "Exporting files is not supported on web for this app. Please use Android/iOS."
+        "Exporting files is not supported on web for this app. Please use Android/iOS.",
       );
       return;
     }
@@ -296,7 +291,7 @@ export default function History() {
   useFocusEffect(
     useCallback(() => {
       loadHistory();
-    }, [])
+    }, []),
   );
 
   const handleDelete = async (id: number) => {
@@ -316,12 +311,11 @@ export default function History() {
             if (error) {
               Alert.alert("Error", "Failed to delete measurement.");
             } else {
-              // Refresh the list
               loadHistory();
             }
           },
         },
-      ]
+      ],
     );
   };
 

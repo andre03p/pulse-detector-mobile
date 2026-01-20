@@ -16,14 +16,14 @@ interface AuthProps {
   onVerifyOtpAndUpdatePassword?: (
     email: string,
     token: string,
-    newPassword: string
+    newPassword: string,
   ) => Promise<any>;
   onSendVerificationCode?: (email: string) => Promise<any>;
   onVerifyEmailWithOtp?: (
     email: string,
     token: string,
     name: string,
-    password: string
+    password: string,
   ) => Promise<any>;
 }
 
@@ -77,7 +77,6 @@ export const AuthProvider = ({ children }: any) => {
 
     checkSession();
 
-    // Listen for auth changes
     const {
       data: { subscription },
     } = supabase.auth.onAuthStateChange(async (event, session) => {
@@ -107,7 +106,7 @@ export const AuthProvider = ({ children }: any) => {
     try {
       const { data: existingUsers, error: checkError } = await supabase.rpc(
         "check_user_exists",
-        { email_input: email }
+        { email_input: email },
       );
 
       const { data, error } = await supabase.auth.signUp({
@@ -143,9 +142,6 @@ export const AuthProvider = ({ children }: any) => {
         return { error: true, msg: error.message };
       }
 
-      // When email confirmation is enabled, Supabase returns a user
-      // but no session if the email already exists (to prevent enumeration)
-      // We can detect this scenario
       if (data.user && !data.session && data.user.identities?.length === 0) {
         return {
           error: true,
@@ -153,12 +149,10 @@ export const AuthProvider = ({ children }: any) => {
         };
       }
 
-      // Create user profile in User table
       if (data.user?.id && data.user?.email) {
         await createUserProfile(data.user.id, data.user.email, name);
       }
 
-      // Successful registration
       const successMsg = data.session
         ? "Registration successful!"
         : "Registration successful! Please check your email to verify your account.";
@@ -219,11 +213,10 @@ export const AuthProvider = ({ children }: any) => {
 
   const resetPassword = async (email: string) => {
     try {
-      // Send OTP (one-time password) code instead of email link
       const { data, error } = await supabase.auth.signInWithOtp({
         email: email,
         options: {
-          shouldCreateUser: false, // Don't create new user, only allow existing users
+          shouldCreateUser: false,
         },
       });
 
@@ -249,10 +242,9 @@ export const AuthProvider = ({ children }: any) => {
   const verifyOtpAndUpdatePassword = async (
     email: string,
     token: string,
-    newPassword: string
+    newPassword: string,
   ) => {
     try {
-      // First, verify the OTP
       const { data: verifyData, error: verifyError } =
         await supabase.auth.verifyOtp({
           email: email,
@@ -265,7 +257,6 @@ export const AuthProvider = ({ children }: any) => {
         return { error: true, msg: verifyError.message };
       }
 
-      // If verification successful, update the password
       const { data: updateData, error: updateError } =
         await supabase.auth.updateUser({
           password: newPassword,
@@ -276,7 +267,6 @@ export const AuthProvider = ({ children }: any) => {
         return { error: true, msg: updateError.message };
       }
 
-      // Sign out after password update
       await supabase.auth.signOut();
 
       return {
@@ -295,9 +285,6 @@ export const AuthProvider = ({ children }: any) => {
 
   const sendVerificationCode = async (email: string) => {
     try {
-      // For new registrations, we can't use OTP without creating user first
-      // Instead, return success to proceed to next step
-      // The actual account will be created in verifyEmailWithOtp
       return {
         error: false,
         msg: "Ready to create account",
@@ -316,11 +303,9 @@ export const AuthProvider = ({ children }: any) => {
     email: string,
     token: string,
     name: string,
-    password: string
+    password: string,
   ) => {
     try {
-      // Create the account directly with email confirmation disabled
-      // Since we're manually verifying with a code, we'll use signUp
       const { data: signUpData, error: signUpError } =
         await supabase.auth.signUp({
           email,
@@ -329,7 +314,6 @@ export const AuthProvider = ({ children }: any) => {
             data: {
               display_name: name,
             },
-            // Let Supabase handle email confirmation
           },
         });
 
@@ -338,10 +322,7 @@ export const AuthProvider = ({ children }: any) => {
         return { error: true, msg: signUpError.message };
       }
 
-      // Check if email confirmation is required
       if (signUpData.user && !signUpData.session) {
-        // User created but needs email confirmation
-        // Try to verify with the provided token
         const { data: verifyData, error: verifyError } =
           await supabase.auth.verifyOtp({
             email: email,
@@ -357,7 +338,6 @@ export const AuthProvider = ({ children }: any) => {
           };
         }
 
-        // Sign out after verification
         await supabase.auth.signOut();
 
         return {
@@ -367,7 +347,6 @@ export const AuthProvider = ({ children }: any) => {
         };
       }
 
-      // If session exists, user is auto-logged in (email confirmation disabled)
       if (signUpData.session) {
         await supabase.auth.signOut();
       }
