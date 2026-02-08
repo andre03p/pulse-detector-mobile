@@ -45,7 +45,7 @@ export default function Profile() {
         showsVerticalScrollIndicator={false}
       >
         <LinearGradient
-          colors={["#0d1321", "#1d2d44"]}
+          colors={["#0d1321", "#1d2d44", "#3e5c76"]}
           style={[styles.header, { paddingTop: insets.top + 16 }]}
         >
           <View style={styles.avatarContainer}>
@@ -111,6 +111,8 @@ const styles = StyleSheet.create({
     paddingHorizontal: 20,
     paddingBottom: 30,
     alignItems: "center",
+    borderBottomLeftRadius: 30,
+    borderBottomRightRadius: 30,
   },
   avatarContainer: {
     width: 100,

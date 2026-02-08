@@ -229,7 +229,7 @@ export default function AlarmRemindersApp() {
       >
         {/* Header */}
         <LinearGradient
-          colors={["#0d1321", "#1d2d44"]}
+          colors={["#0d1321", "#1d2d44", "#3e5c76"]}
           style={[styles.header, { paddingTop: insets.top + 16 }]}
         >
           <View style={styles.headerContent}>
@@ -398,7 +398,9 @@ const styles = StyleSheet.create({
   },
   header: {
     paddingHorizontal: 20,
-    paddingBottom: 20,
+    paddingBottom: 24,
+    borderBottomLeftRadius: 30,
+    borderBottomRightRadius: 30,
   },
   headerContent: {
     flexDirection: "row",
@@ -408,9 +410,10 @@ const styles = StyleSheet.create({
     marginBottom: 8,
   },
   headerTitle: {
-    fontSize: 28,
-    fontWeight: "bold",
+    fontSize: 32,
+    fontWeight: "800",
     color: "#f0ebd8",
+    letterSpacing: 0.5,
   },
   addButton: {
     backgroundColor: "#748cab",

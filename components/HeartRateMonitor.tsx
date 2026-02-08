@@ -1,3 +1,4 @@
+import PulseWave from "@/components/PulseWave";
 import { addMeasurement } from "@/lib/supabaseQueries";
 import {
   assessSignalQuality,
@@ -63,6 +64,7 @@ export default function HeartRateMonitor() {
   const [progress, setProgress] = useState(0);
   const [fingerDetected, setFingerDetected] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
+  const [waveform, setWaveform] = useState<number[]>([]);
   const [advancedMetrics, setAdvancedMetrics] =
     useState<AdvancedMetrics | null>(null);
 
@@ -83,6 +85,7 @@ export default function HeartRateMonitor() {
   const detectionPhaseRef = useRef<"waiting" | "measuring">("waiting");
   const validReadingsRef = useRef<number[]>([]);
   const lastProcessTimeRef = useRef<number>(0);
+  const lastWaveUpdateRef = useRef<number>(0);
 
   useEffect(() => {
     if (fingerDetected && currentBPM) {
@@ -157,6 +160,11 @@ export default function HeartRateMonitor() {
 
       if (dataBufferRef.current.length > WINDOW_SIZE) {
         dataBufferRef.current.shift();
+      }
+
+      if (now - lastWaveUpdateRef.current > 120) {
+        lastWaveUpdateRef.current = now;
+        setWaveform(dataBufferRef.current.slice(-120));
       }
 
       const currentProgress = Math.min(
@@ -258,6 +266,7 @@ export default function HeartRateMonitor() {
     validReadingsRef.current = [];
     setCurrentBPM(null);
     setAdvancedMetrics(null);
+    setWaveform([]);
     setFingerDetected(false);
     detectionPhaseRef.current = "waiting";
     setIsMonitoring(true);
@@ -363,6 +372,8 @@ export default function HeartRateMonitor() {
                   </View>
                 )}
 
+                <PulseWave data={waveform} height={80} />
+
                 {advancedMetrics && (
                   <ScrollView
                     style={styles.metricsScroll}
@@ -399,6 +410,14 @@ export default function HeartRateMonitor() {
                           {advancedMetrics.hrv.pnn50.toFixed(1)}
                         </Text>
                         <Text style={styles.metricUnit}>%</Text>
+                      </View>
+
+                      <View style={styles.metricCard}>
+                        <Text style={styles.metricLabel}>NN50</Text>
+                        <Text style={styles.metricValue}>
+                          {advancedMetrics.hrv.nn50.toFixed(0)}
+                        </Text>
+                        <Text style={styles.metricUnit}>count</Text>
                       </View>
 
                       <View style={styles.metricCard}>

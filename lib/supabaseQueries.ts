@@ -184,7 +184,7 @@ export const fetchMeasurements = async () => {
     .select("*")
     .eq("userId", userId)
     .order("created_at", { ascending: false })
-    .limit(50);
+    .limit(100);
 
   if (error) {
     console.error("Error fetching measurements:", error);
@@ -269,6 +269,43 @@ export const getHeartRateStats = async () => {
     },
     error: null,
   };
+};
+
+export const getWeeklyHeartRateSeries = async () => {
+  const userId = await getUserId();
+  if (!userId) return { data: null, error: { message: "Not authenticated" } };
+
+  const weekAgo = new Date();
+  weekAgo.setDate(weekAgo.getDate() - 7);
+
+  const { data, error } = await supabase
+    .from("Measurement")
+    .select("heartRate, created_at")
+    .eq("userId", userId)
+    .gte("created_at", weekAgo.toISOString())
+    .order("created_at", { ascending: true });
+
+  if (error) {
+    console.error("Error fetching weekly series:", error);
+    return { data: null, error };
+  }
+
+  const byDay: Record<string, number[]> = {};
+  for (const row of data ?? []) {
+    const day = new Date(row.created_at).toISOString().slice(0, 10);
+    byDay[day] = byDay[day] ?? [];
+    byDay[day].push(row.heartRate);
+  }
+
+  const series = Object.keys(byDay)
+    .sort()
+    .map((day) => {
+      const values = byDay[day];
+      const avg = Math.round(values.reduce((a, b) => a + b, 0) / values.length);
+      return { day, avg, count: values.length };
+    });
+
+  return { data: series, error: null };
 };
 
 export const deleteMeasurement = async (measurementId: number) => {

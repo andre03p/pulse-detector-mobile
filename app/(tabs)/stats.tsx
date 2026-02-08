@@ -1,6 +1,9 @@
+import WeeklyBpmChart from "@/components/WeeklyBpmChart";
 import { useAuth } from "@/context/AuthContext";
-import { getHeartRateStats } from "@/lib/supabaseQueries";
-import Foundation from "@expo/vector-icons/Foundation";
+import {
+  getHeartRateStats,
+  getWeeklyHeartRateSeries,
+} from "@/lib/supabaseQueries";
 import Ionicons from "@expo/vector-icons/Ionicons";
 import { useFocusEffect } from "@react-navigation/native";
 import { LinearGradient } from "expo-linear-gradient";
@@ -30,16 +33,19 @@ export default function Stats() {
     totalReadings: 0,
     weeklyReadings: 0,
   });
+  const [weeklySeries, setWeeklySeries] = useState<
+    { day: string; avg: number; count: number }[]
+  >([]);
 
   const loadStats = async () => {
     try {
-      const { data, error } = await getHeartRateStats();
+      const [{ data, error }, weekly] = await Promise.all([
+        getHeartRateStats(),
+        getWeeklyHeartRateSeries(),
+      ]);
 
-      if (error) {
-        console.error("Error fetching stats:", error);
-      } else if (data) {
-        setStats(data);
-      }
+      if (!error && data) setStats(data);
+      if (!weekly.error && weekly.data) setWeeklySeries(weekly.data);
     } catch (error) {
       console.error("Error loading stats:", error);
     } finally {
@@ -57,30 +63,6 @@ export default function Stats() {
     }, []),
   );
 
-  const handleHeartRate = () => {
-    if (stats.avgBpm < 60) {
-      return "Your average heart rate is quite low, indicating good cardiovascular fitness.";
-    } else if (stats.avgBpm <= 100) {
-      return "Your average heart rate is within the normal resting range.";
-    } else if (stats.avgBpm <= 130) {
-      return "Your average heart rate suggests light to moderate activity levels.";
-    } else if (stats.avgBpm <= 150) {
-      return "Your average heart rate indicates moderate to high activity levels.";
-    } else {
-      return "Your average heart rate is quite high; consider consulting a healthcare professional.";
-    }
-  };
-
-  const handleReadingsConsistency = () => {
-    if (stats.weeklyReadings >= 5) {
-      return "Great job! You're consistently monitoring your heart rate.";
-    } else if (stats.weeklyReadings >= 3) {
-      return "Good effort! Try to monitor your heart rate a bit more regularly.";
-    } else {
-      return "Consider monitoring your heart rate more frequently for better insights.";
-    }
-  };
-
   const footerHeight = 80 + (insets.bottom || 12);
 
   if (isLoading) {
@@ -97,44 +79,22 @@ export default function Stats() {
     );
   }
 
-  const bpmZones = [
-    { label: "Below 60", description: "Resting (Athletic)", color: "#748cab" },
-    { label: "60 - 100", description: "Resting (Normal)", color: "#3e5c76" },
-    {
-      label: "100 - 130",
-      description: "Warm Up / Light Effort",
-      color: "#4caf50",
-    },
-    {
-      label: "130 - 150",
-      description: "Fat Burn / Moderate",
-      color: "#fbc02d",
-    },
-    { label: "150 - 170", description: "Cardio / Hard", color: "#f57c00" },
-    { label: "170+", description: "Peak / Max Effort", color: "#d32f2f" },
-  ];
-
   return (
     <ScrollView style={[styles.container, { paddingBottom: footerHeight }]}>
       <LinearGradient
-        colors={["#0d1321", "#1d2d44"]}
+        colors={["#0d1321", "#1d2d44", "#3e5c76"]}
         style={[styles.header, { paddingTop: insets.top + 16 }]}
       >
         <View style={styles.headerContent}>
           <Ionicons name="stats-chart" size={28} color="#f0ebd8" />
           <Text style={styles.title}>Statistics</Text>
         </View>
-        <Text style={styles.subtitle}>Your heart health overview</Text>
+        <Text style={styles.subtitle}>Your heart rate overview</Text>
       </LinearGradient>
 
       <View style={[styles.content, { paddingBottom: footerHeight }]}>
         {/* Main Stats Card */}
-        <LinearGradient
-          colors={["#3e5c76", "#1d2d44"]}
-          start={{ x: 0, y: 0 }}
-          end={{ x: 1, y: 1 }}
-          style={styles.mainCard}
-        >
+        <View style={styles.mainCard}>
           <Text style={styles.cardTitle}>Average Heart Rate</Text>
           <View style={styles.mainStatContainer}>
             <Text style={styles.mainStatValue}>{stats.avgBpm}</Text>
@@ -142,82 +102,81 @@ export default function Stats() {
           </View>
           <View style={styles.rangeContainer}>
             <View style={styles.rangeItem}>
-              <Text style={styles.rangeValue}>↓ {stats.minBpm}</Text>
-              <Text style={styles.rangeLabel}>Lowest</Text>
+              <Text style={styles.rangeValue}>{stats.minBpm}</Text>
+              <Text style={styles.rangeLabel}>Min</Text>
             </View>
             <View style={styles.rangeDivider} />
             <View style={styles.rangeItem}>
-              <Text style={styles.rangeValue}>↑ {stats.maxBpm}</Text>
-              <Text style={styles.rangeLabel}>Highest</Text>
+              <Text style={styles.rangeValue}>{stats.maxBpm}</Text>
+              <Text style={styles.rangeLabel}>Max</Text>
             </View>
           </View>
-        </LinearGradient>
+        </View>
 
-        {/* Grid Stats */}
+        {/* Quick Info Grid */}
         <View style={styles.gridContainer}>
           <View style={styles.gridCard}>
-            <Ionicons name="stats-chart-outline" size={24} color="#f0ebd8" />
-            <Text style={styles.gridValue}>{stats.totalReadings}</Text>
-            <Text style={styles.gridLabel}>Total Readings</Text>
-          </View>
-
-          <View style={styles.gridCard}>
-            <Ionicons name="calendar" size={24} color="#f0ebd8" />
+            <Ionicons name="calendar" size={32} color="#748cab" />
             <Text style={styles.gridValue}>{stats.weeklyReadings}</Text>
             <Text style={styles.gridLabel}>This Week</Text>
           </View>
-        </View>
-
-        {/* Insights Card */}
-        <View style={styles.insightsCard}>
-          <Text style={styles.insightsTitle}>
-            <Foundation name="lightbulb" size={20} color="#f0ebd8" />
-            Insights
-          </Text>
-          <View style={styles.insightItem}>
-            <View style={styles.insightDot} />
-            <Text style={styles.insightText}>{handleHeartRate()}</Text>
-          </View>
-          <View style={styles.insightItem}>
-            <View style={styles.insightDot} />
-            <Text style={styles.insightText}>
-              {handleReadingsConsistency()}
-            </Text>
-          </View>
-          <View style={styles.insightItem}>
-            <View style={styles.insightDot} />
-            <Text style={styles.insightText}>
-              Keep tracking regularly for better health insights
-            </Text>
+          <View style={styles.gridCard}>
+            <Ionicons name="stats-chart" size={32} color="#748cab" />
+            <Text style={styles.gridValue}>{stats.totalReadings}</Text>
+            <Text style={styles.gridLabel}>Total Readings</Text>
           </View>
         </View>
 
-        {/* Health Ranges Info */}
-        <View>
-          <LinearGradient
-            colors={["#3e5c76", "#1d2d44"]}
-            start={{ x: 0, y: 0 }}
-            end={{ x: 1, y: 1 }}
-            style={styles.infoCard}
-          >
-            <Text style={styles.infoTitle}>Heart Rate Zones</Text>
-            <Text style={styles.infoSubtitle}>Resting vs. Active Levels</Text>
+        {/* Weekly Chart */}
+        {weeklySeries.length > 0 && (
+          <View style={styles.chartCard}>
+            <Text style={styles.cardTitle}>Weekly Trend</Text>
+            <WeeklyBpmChart data={weeklySeries} />
+          </View>
+        )}
 
-            {bpmZones.map((zone, index) => (
-              <View key={index} style={styles.infoRow}>
-                <View style={styles.leftContainer}>
-                  <View
-                    style={[
-                      styles.infoIndicator,
-                      { backgroundColor: zone.color },
-                    ]}
-                  />
-                  <Text style={styles.rangeText}>{zone.label}</Text>
-                </View>
-                <Text style={styles.descText}>{zone.description}</Text>
+        {/* Heart Rate Zones */}
+        <View style={styles.infoCard}>
+          <Text style={styles.infoTitle}>Heart Rate Zones</Text>
+          <Text style={styles.infoSubtitle}>Understanding your numbers</Text>
+          <View style={styles.zonesContainer}>
+            <View style={styles.infoRow}>
+              <View style={styles.leftContainer}>
+                <View
+                  style={[styles.infoIndicator, { backgroundColor: "#4CAF50" }]}
+                />
+                <Text style={styles.rangeText}>60-100</Text>
               </View>
-            ))}
-          </LinearGradient>
+              <Text style={styles.descText}>Normal resting</Text>
+            </View>
+            <View style={styles.infoRow}>
+              <View style={styles.leftContainer}>
+                <View
+                  style={[styles.infoIndicator, { backgroundColor: "#2196F3" }]}
+                />
+                <Text style={styles.rangeText}>&lt; 60</Text>
+              </View>
+              <Text style={styles.descText}>Athletic</Text>
+            </View>
+            <View style={styles.infoRow}>
+              <View style={styles.leftContainer}>
+                <View
+                  style={[styles.infoIndicator, { backgroundColor: "#FF9800" }]}
+                />
+                <Text style={styles.rangeText}>100-130</Text>
+              </View>
+              <Text style={styles.descText}>Elevated</Text>
+            </View>
+            <View style={styles.infoRow}>
+              <View style={styles.leftContainer}>
+                <View
+                  style={[styles.infoIndicator, { backgroundColor: "#F44336" }]}
+                />
+                <Text style={styles.rangeText}>130+</Text>
+              </View>
+              <Text style={styles.descText}>High</Text>
+            </View>
+          </View>
         </View>
       </View>
     </ScrollView>
@@ -228,11 +187,12 @@ const styles = StyleSheet.create({
   container: {
     flex: 1,
     backgroundColor: "#050000",
-    paddingBottom: 80,
   },
   header: {
     paddingHorizontal: 20,
-    paddingBottom: 20,
+    paddingBottom: 24,
+    borderBottomLeftRadius: 30,
+    borderBottomRightRadius: 30,
   },
   headerContent: {
     flexDirection: "row",
@@ -242,30 +202,31 @@ const styles = StyleSheet.create({
     marginBottom: 8,
   },
   title: {
-    fontSize: 28,
-    fontWeight: "bold",
+    fontSize: 32,
+    fontWeight: "800",
     color: "#f0ebd8",
+    letterSpacing: 0.5,
   },
   subtitle: {
-    fontSize: 14,
-    color: "#748cab",
+    fontSize: 15,
+    color: "#b8c5d6",
     textAlign: "center",
+    fontWeight: "500",
   },
   content: {
     padding: 16,
   },
   mainCard: {
-    backgroundColor: "#3e5c76",
+    backgroundColor: "#0d1321",
     borderRadius: 16,
     padding: 24,
     marginBottom: 16,
-    shadowColor: "#0d1321",
-    shadowOffset: {
-      width: 0,
-      height: 2,
-    },
+    shadowColor: "#3e5c76",
+    shadowOffset: { width: 0, height: 2 },
     shadowOpacity: 0.25,
     shadowRadius: 3.84,
+    borderWidth: 1,
+    borderColor: "#3e5c76",
     elevation: 5,
   },
   cardTitle: {
@@ -321,7 +282,7 @@ const styles = StyleSheet.create({
     marginBottom: 16,
   },
   gridCard: {
-    backgroundColor: "#0d1321",
+    backgroundColor: "#050000",
     borderRadius: 12,
     padding: 20,
     width: (width - 48) / 2,
@@ -329,14 +290,11 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: "#3e5c76",
   },
-  gridIcon: {
-    fontSize: 32,
-    marginBottom: 12,
-  },
   gridValue: {
     fontSize: 24,
     fontWeight: "bold",
     color: "#f0ebd8",
+    marginTop: 12,
     marginBottom: 4,
   },
   gridLabel: {
@@ -344,61 +302,30 @@ const styles = StyleSheet.create({
     color: "#748cab",
     textAlign: "center",
   },
-  insightsCard: {
-    backgroundColor: "#0d1321",
+  chartCard: {
+    backgroundColor: "#050000",
     borderRadius: 12,
-    padding: 20,
+    padding: 16,
     marginBottom: 16,
     borderWidth: 1,
     borderColor: "#3e5c76",
   },
-  insightsTitle: {
-    fontSize: 18,
-    fontWeight: "bold",
-    color: "#f0ebd8",
-    marginBottom: 16,
-  },
-  insightItem: {
-    flexDirection: "row",
-    alignItems: "flex-start",
-    marginBottom: 12,
-  },
-  insightDot: {
-    width: 6,
-    height: 6,
-    borderRadius: 3,
-    backgroundColor: "#3e5c76",
-    marginTop: 6,
-    marginRight: 12,
-  },
-  insightText: {
-    flex: 1,
-    fontSize: 14,
-    color: "#f0ebd8",
-    lineHeight: 20,
-  },
-  infoText: {
-    fontSize: 14,
-    color: "#f0ebd8",
-  },
   infoCard: {
-    borderRadius: 16,
+    backgroundColor: "#050000",
+    borderRadius: 12,
     padding: 20,
-    elevation: 4,
-    shadowColor: "#000",
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.1,
-    shadowRadius: 4,
+    borderWidth: 1,
+    borderColor: "#3e5c76",
   },
   infoTitle: {
     fontSize: 18,
     fontWeight: "bold",
-    color: "#0e0101ff",
+    color: "#f0ebd8",
     marginBottom: 4,
   },
   infoSubtitle: {
     fontSize: 14,
-    color: "#848181ff",
+    color: "#748cab",
     marginBottom: 16,
   },
   infoRow: {
@@ -421,17 +348,23 @@ const styles = StyleSheet.create({
   rangeText: {
     fontSize: 14,
     fontWeight: "600",
-    color: "#fbf7f7ff",
+    color: "#f0ebd8",
   },
   descText: {
     fontSize: 14,
-    color: "#fbf7f7ff",
+    color: "#f0ebd8",
     flex: 1,
     textAlign: "right",
   },
+  zonesContainer: {
+    gap: 0,
+  },
+
+  // Loading
   loadingText: {
     fontSize: 16,
     color: "#748cab",
     marginTop: 16,
+    fontWeight: "500",
   },
 });

@@ -58,7 +58,7 @@ export default function Home() {
   useFocusEffect(
     useCallback(() => {
       loadLatestMeasurement();
-    }, [])
+    }, []),
   );
 
   const footerHeight = 80 + (insets.bottom || 12);
@@ -71,7 +71,7 @@ export default function Home() {
         showsVerticalScrollIndicator={false}
       >
         <LinearGradient
-          colors={["#0d1321", "#1d2d44"]}
+          colors={["#0d1321", "#1d2d44", "#3e5c76"]}
           style={[styles.header, { paddingTop: insets.top + 16 }]}
         >
           <View style={styles.headerContent}>
@@ -161,7 +161,9 @@ const styles = StyleSheet.create({
   },
   header: {
     paddingHorizontal: 20,
-    paddingBottom: 20,
+    paddingBottom: 24,
+    borderBottomLeftRadius: 30,
+    borderBottomRightRadius: 30,
   },
   headerContent: {
     flexDirection: "row",
@@ -171,13 +173,15 @@ const styles = StyleSheet.create({
     marginBottom: 8,
   },
   headerTitle: {
-    fontSize: 28,
-    fontWeight: "bold",
+    fontSize: 32,
+    fontWeight: "800",
     color: "#f0ebd8",
+    letterSpacing: 0.5,
   },
   headerSubtitle: {
-    fontSize: 14,
-    color: "#748cab",
+    fontSize: 15,
+    color: "#b8c5d6",
+    fontWeight: "500",
     textAlign: "center",
   },
   content: {
@@ -233,7 +237,7 @@ const styles = StyleSheet.create({
     paddingTop: 20,
   },
   infoCard: {
-    backgroundColor: "#0d1321",
+    backgroundColor: "#050000",
     borderRadius: 16,
     padding: 20,
     borderWidth: 2,
