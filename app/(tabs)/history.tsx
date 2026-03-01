@@ -4,10 +4,12 @@ import Ionicons from "@expo/vector-icons/Ionicons";
 import MaterialIcons from "@expo/vector-icons/MaterialIcons";
 import { useFocusEffect } from "@react-navigation/native";
 import { LinearGradient } from "expo-linear-gradient";
-import React, { useCallback, useEffect, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useState } from "react";
 import {
   ActivityIndicator,
   Alert,
+  Dimensions,
+  Modal,
   Platform,
   ScrollView,
   Share,
@@ -27,6 +29,15 @@ interface HistoryItem {
   userId: number;
 }
 
+const MONTH_NAMES = [
+  "January", "February", "March", "April", "May", "June",
+  "July", "August", "September", "October", "November", "December",
+];
+const DAY_HEADERS = ["Su", "Mo", "Tu", "We", "Th", "Fr", "Sa"];
+
+const { width: SCREEN_WIDTH } = Dimensions.get("window");
+const CELL_SIZE = Math.floor((SCREEN_WIDTH - 48) / 7);
+
 export default function History() {
   const { authState } = useAuth();
   const [history, setHistory] = useState<HistoryItem[]>([]);
@@ -34,6 +45,135 @@ export default function History() {
   const [refreshing, setRefreshing] = useState(false);
   const insets = useSafeAreaInsets();
 
+  // ── Calendar state ──────────────────────────────────────────────────────────
+  const [calendarVisible, setCalendarVisible] = useState(false);
+  const [calendarMonth, setCalendarMonth] = useState(() => new Date());
+  const [rangeStart, setRangeStart] = useState<Date | null>(null);
+  const [rangeEnd, setRangeEnd] = useState<Date | null>(null);
+  const [activeRange, setActiveRange] = useState<{ start: Date; end: Date } | null>(null);
+
+  // ── Derived filtered list ───────────────────────────────────────────────────
+  const filteredHistory = useMemo(() => {
+    if (!activeRange) return history;
+    const start = new Date(activeRange.start);
+    start.setHours(0, 0, 0, 0);
+    const end = new Date(activeRange.end);
+    end.setHours(23, 59, 59, 999);
+    return history.filter((item) => {
+      const d = new Date(item.created_at);
+      return d >= start && d <= end;
+    });
+  }, [history, activeRange]);
+
+  // ── Calendar helpers ────────────────────────────────────────────────────────
+  const isSameDay = (a: Date, b: Date) =>
+    a.getFullYear() === b.getFullYear() &&
+    a.getMonth() === b.getMonth() &&
+    a.getDate() === b.getDate();
+
+  const handleDayPress = (day: Date) => {
+    if (!rangeStart || rangeEnd) {
+      // Start fresh selection
+      setRangeStart(day);
+      setRangeEnd(null);
+    } else {
+      // Complete the range
+      if (day < rangeStart) {
+        setRangeEnd(rangeStart);
+        setRangeStart(day);
+      } else {
+        setRangeEnd(day);
+      }
+    }
+  };
+
+  const openCalendar = () => {
+    if (activeRange) {
+      setRangeStart(activeRange.start);
+      setRangeEnd(activeRange.end);
+      setCalendarMonth(
+        new Date(activeRange.start.getFullYear(), activeRange.start.getMonth(), 1),
+      );
+    } else {
+      setCalendarMonth(new Date());
+    }
+    setCalendarVisible(true);
+  };
+
+  const applyRange = () => {
+    if (rangeStart) {
+      setActiveRange({ start: rangeStart, end: rangeEnd ?? rangeStart });
+    }
+    setCalendarVisible(false);
+  };
+
+  const clearRange = () => {
+    setRangeStart(null);
+    setRangeEnd(null);
+    setActiveRange(null);
+    setCalendarVisible(false);
+  };
+
+  const renderCalendarGrid = () => {
+    const year = calendarMonth.getFullYear();
+    const month = calendarMonth.getMonth();
+    const daysInMonth = new Date(year, month + 1, 0).getDate();
+    const firstDayOfWeek = new Date(year, month, 1).getDay();
+
+    const cells: (Date | null)[] = Array(firstDayOfWeek).fill(null);
+    for (let d = 1; d <= daysInMonth; d++) {
+      cells.push(new Date(year, month, d));
+    }
+    while (cells.length % 7 !== 0) cells.push(null);
+
+    const rows: (Date | null)[][] = [];
+    for (let i = 0; i < cells.length; i += 7) rows.push(cells.slice(i, i + 7));
+
+    return rows.map((row, ri) => (
+      <View key={ri} style={calStyles.weekRow}>
+        {row.map((day, di) => {
+          if (!day) return <View key={di} style={calStyles.dayCell} />;
+
+          const isStart = !!rangeStart && isSameDay(day, rangeStart);
+          const isEnd = !!rangeEnd && isSameDay(day, rangeEnd);
+          const isSelected = isStart || isEnd;
+          const isInRange =
+            !!rangeStart &&
+            !!rangeEnd &&
+            day > rangeStart &&
+            day < rangeEnd;
+
+          return (
+            <TouchableOpacity
+              key={di}
+              onPress={() => handleDayPress(day)}
+              style={[calStyles.dayCell, isInRange && calStyles.dayCellInRange]}
+              activeOpacity={0.7}
+            >
+              <View
+                style={[calStyles.dayInner, isSelected && calStyles.dayInnerSelected]}
+              >
+                <Text
+                  style={[
+                    calStyles.dayText,
+                    isSelected && calStyles.dayTextSelected,
+                    isInRange && calStyles.dayTextInRange,
+                  ]}
+                >
+                  {day.getDate()}
+                </Text>
+              </View>
+            </TouchableOpacity>
+          );
+        })}
+      </View>
+    ));
+  };
+
+  const formatRangeLabel = (d: Date) =>
+    d.toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });
+
+  // ── Export helpers ──────────────────────────────────────────────────────────
   const escapeCsvValue = (value: string) => {
     const needsQuotes =
       value.includes(",") || value.includes("\n") || value.includes('"');
@@ -54,10 +194,9 @@ export default function History() {
           return;
         }
       }
-    } catch (err) {
+    } catch {
       console.log("expo-sharing not available");
     }
-
     try {
       if (Platform.OS === "ios") {
         await Share.share({ url: uri });
@@ -70,48 +209,20 @@ export default function History() {
     }
   };
 
-  const exportAsJson = async () => {
-    try {
-      const { File, Paths } = await import("expo-file-system");
-
-      const payload = history.map((h) => ({
-        id: h.id,
-        created_at: h.created_at,
-        heartRate: h.heartRate,
-      }));
-
-      const fileName = `pulse_history_${Date.now()}.json`;
-      const file = new File(Paths.document, fileName);
-
-      await file.write(JSON.stringify(payload, null, 2));
-
-      await shareFile(file.uri);
-      Alert.alert("Success", "JSON file exported successfully");
-    } catch (error) {
-      console.error("Export JSON error:", error);
-      Alert.alert("Export failed", "Could not export data as JSON");
-    }
-  };
-
   const exportAsCsv = async () => {
     try {
       const { File, Paths } = await import("expo-file-system");
-
       const header = ["id", "created_at", "heartRate"].join(",");
-      const rows = history.map((h) =>
+      const rows = filteredHistory.map((h) =>
         [
           String(h.id),
           escapeCsvValue(new Date(h.created_at).toISOString()),
           String(h.heartRate),
         ].join(","),
       );
-      const csv = [header, ...rows].join("\n");
-
       const fileName = `pulse_history_${Date.now()}.csv`;
       const file = new File(Paths.document, fileName);
-
-      await file.write(csv);
-
+      await file.write([header, ...rows].join("\n"));
       await shareFile(file.uri);
       Alert.alert("Success", "CSV file exported successfully");
     } catch (error) {
@@ -123,152 +234,77 @@ export default function History() {
   const exportAsPdf = async () => {
     try {
       const Print = await import("expo-print");
-
-      if (
-        !Print?.printToFileAsync ||
-        typeof Print.printToFileAsync !== "function"
-      ) {
+      if (!Print?.printToFileAsync || typeof Print.printToFileAsync !== "function") {
         Alert.alert(
           "PDF Export Unavailable",
-          "The expo-print package is not installed. Please run:\n\nnpx expo install expo-print\n\nThen rebuild your app.",
+          "Install expo-print:\n\nnpx expo install expo-print",
           [{ text: "OK" }],
         );
         return;
       }
-
-      const rowsHtml = history
+      const rowsHtml = filteredHistory
         .map((h) => {
           const date = new Date(h.created_at);
-          return `
-          <tr>
-            <td>${date.toLocaleString()}</td>
-            <td style="text-align:right;">${h.heartRate}</td>
-          </tr>
-        `;
+          return `<tr><td>${date.toLocaleString()}</td><td style="text-align:right;">${h.heartRate}</td></tr>`;
         })
         .join("");
-
-      const html = `
-      <!DOCTYPE html>
-      <html>
-        <head>
-          <meta charset="utf-8" />
-          <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-          <style>
-            body { 
-              font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Arial, sans-serif; 
-              padding: 20px; 
-              margin: 0;
-            }
-            h1 { 
-              font-size: 24px; 
-              margin: 0 0 8px 0; 
-              color: #0d1321;
-            }
-            p { 
-              margin: 0 0 16px 0; 
-              color: #666; 
-              font-size: 14px; 
-            }
-            table { 
-              width: 100%; 
-              border-collapse: collapse; 
-              margin-top: 8px;
-            }
-            th, td { 
-              border-bottom: 1px solid #ddd; 
-              padding: 12px 8px; 
-              font-size: 13px; 
-            }
-            th { 
-              text-align: left; 
-              background-color: #f5f5f5;
-              font-weight: 600;
-              color: #0d1321;
-            }
-            tr:hover {
-              background-color: #f9f9f9;
-            }
-          </style>
-        </head>
-        <body>
-          <h1>Heart Rate History</h1>
-          <p>Exported on ${new Date().toLocaleString()}</p>
-          <p>Total readings: ${history.length}</p>
-          <table>
-            <thead>
-              <tr>
-                <th>Date/Time</th>
-                <th style="text-align:right;">BPM</th>
-              </tr>
-            </thead>
-            <tbody>
-              ${rowsHtml}
-            </tbody>
-          </table>
-        </body>
-      </html>
-    `;
-
-      const { uri } = await Print.printToFileAsync({
-        html,
-        base64: false,
-      });
-
+      const html = `<!DOCTYPE html><html><head><meta charset="utf-8"/>
+        <style>
+          body{font-family:sans-serif;padding:20px}
+          h1{font-size:24px;color:#0d1321}
+          table{width:100%;border-collapse:collapse;margin-top:8px}
+          th,td{border-bottom:1px solid #ddd;padding:10px 8px;font-size:13px}
+          th{background:#f5f5f5;font-weight:600}
+        </style></head><body>
+        <h1>Heart Rate History</h1>
+        <p>Exported on ${new Date().toLocaleString()} · ${filteredHistory.length} readings</p>
+        <table><thead><tr><th>Date/Time</th><th style="text-align:right;">BPM</th></tr></thead>
+        <tbody>${rowsHtml}</tbody></table></body></html>`;
+      const { uri } = await Print.printToFileAsync({ html, base64: false });
       await shareFile(uri);
       Alert.alert("Success", "PDF file exported successfully");
     } catch (error) {
       console.error("Export PDF error:", error);
-      Alert.alert(
-        "Export failed",
-        "Could not export data as PDF. Make sure expo-print is installed:\n\nnpx expo install expo-print",
-      );
+      Alert.alert("Export failed", "Could not export data as PDF.");
     }
   };
 
   const handleExport = async () => {
     if (Platform.OS === "web") {
-      Alert.alert(
-        "Export not supported",
-        "Exporting files is not supported on web for this app. Please use Android/iOS.",
-      );
+      Alert.alert("Not supported", "Exporting is only available on iOS/Android.");
       return;
     }
-    if (history.length === 0) {
-      Alert.alert("Nothing to export", "No readings available yet.");
+    if (filteredHistory.length === 0) {
+      Alert.alert("Nothing to export", "No readings in the selected range.");
       return;
     }
-
     Alert.alert("Export data", "Choose a format:", [
       { text: "Cancel", style: "cancel" },
-
       { text: "CSV", onPress: () => void exportAsCsv() },
       { text: "PDF", onPress: () => void exportAsPdf() },
     ]);
   };
 
-  const renderRightActions = (id: number) => {
-    return (
-      <View style={styles.swipeActions}>
-        <View style={styles.swipeDeleteAction}>
-          <MaterialIcons
-            name="delete-forever"
-            size={28}
-            color="#f0ebd8"
-            onPress={() => handleDelete(id)}
-          />
-          <Text style={styles.swipeDeleteText} onPress={() => handleDelete(id)}>
-            Delete
-          </Text>
-        </View>
+  // ── List helpers ────────────────────────────────────────────────────────────
+  const renderRightActions = (id: number) => (
+    <View style={styles.swipeActions}>
+      <View style={styles.swipeDeleteAction}>
+        <MaterialIcons
+          name="delete-forever"
+          size={28}
+          color="#f0ebd8"
+          onPress={() => handleDelete(id)}
+        />
+        <Text style={styles.swipeDeleteText} onPress={() => handleDelete(id)}>
+          Delete
+        </Text>
       </View>
-    );
-  };
+    </View>
+  );
 
   const loadHistory = async () => {
     try {
       const { data, error } = await fetchMeasurements();
-
       if (error) {
         Alert.alert("Error", "Failed to load history. Please try again.");
         console.error("Error fetching measurements:", error);
@@ -284,25 +320,15 @@ export default function History() {
     }
   };
 
-  useEffect(() => {
-    loadHistory();
-  }, []);
-
-  useFocusEffect(
-    useCallback(() => {
-      loadHistory();
-    }, []),
-  );
+  useEffect(() => { loadHistory(); }, []);
+  useFocusEffect(useCallback(() => { loadHistory(); }, []));
 
   const handleDelete = async (id: number) => {
     Alert.alert(
       "Delete Measurement",
       "Are you sure you want to delete this measurement?",
       [
-        {
-          text: "Cancel",
-          style: "cancel",
-        },
+        { text: "Cancel", style: "cancel" },
         {
           text: "Delete",
           style: "destructive",
@@ -319,39 +345,29 @@ export default function History() {
     );
   };
 
-  const formatDate = (dateString: string) => {
-    const date = new Date(dateString);
-    return date.toLocaleDateString("en-US", {
-      year: "numeric",
-      month: "2-digit",
-      day: "2-digit",
+  const formatDate = (dateString: string) =>
+    new Date(dateString).toLocaleDateString("en-US", {
+      year: "numeric", month: "2-digit", day: "2-digit",
     });
-  };
 
-  const formatTime = (dateString: string) => {
-    const date = new Date(dateString);
-    return date.toLocaleTimeString("en-US", {
-      hour: "2-digit",
-      minute: "2-digit",
+  const formatTime = (dateString: string) =>
+    new Date(dateString).toLocaleTimeString("en-US", {
+      hour: "2-digit", minute: "2-digit",
     });
-  };
 
   const footerHeight = 80 + (insets.bottom || 12);
 
+  // ── Loading state ───────────────────────────────────────────────────────────
   if (isLoading) {
     return (
-      <View
-        style={[
-          styles.container,
-          { justifyContent: "center", alignItems: "center" },
-        ]}
-      >
+      <View style={[styles.container, { justifyContent: "center", alignItems: "center" }]}>
         <ActivityIndicator size="large" color="#748cab" />
         <Text style={styles.loadingText}>Loading history...</Text>
       </View>
     );
   }
 
+  // ── Render ──────────────────────────────────────────────────────────────────
   return (
     <View style={styles.container}>
       <ScrollView
@@ -359,6 +375,7 @@ export default function History() {
         contentContainerStyle={{ paddingBottom: footerHeight }}
         showsVerticalScrollIndicator={false}
       >
+        {/* ── Header ── */}
         <LinearGradient
           colors={["#0d1321", "#1d2d44", "#3e5c76"]}
           style={[styles.header, { paddingTop: insets.top + 16 }]}
@@ -367,34 +384,59 @@ export default function History() {
             <Ionicons name="time" size={28} color="#f0ebd8" />
             <Text style={styles.title}>History</Text>
           </View>
-          <Text style={styles.subtitle}>
-            {history.length} {history.length === 1 ? "reading" : "readings"}{" "}
-            recorded
-          </Text>
 
-          <TouchableOpacity style={styles.exportButton} onPress={handleExport}>
-            <MaterialIcons name="file-download" size={18} color="#f0ebd8" />
-            <Text style={styles.exportButtonText}>Export data</Text>
-          </TouchableOpacity>
+          {activeRange ? (
+            <View style={styles.filterActive}>
+              <Ionicons name="calendar" size={14} color="#f0ebd8" />
+              <Text style={styles.filterActiveText}>
+                {formatRangeLabel(activeRange.start)}
+                {isSameDay(activeRange.start, activeRange.end)
+                  ? ""
+                  : ` – ${formatRangeLabel(activeRange.end)}`}
+              </Text>
+              <Text style={styles.filterCount}>
+                · {filteredHistory.length} reading{filteredHistory.length !== 1 ? "s" : ""}
+              </Text>
+              <TouchableOpacity onPress={clearRange} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
+                <Ionicons name="close-circle" size={16} color="#f0ebd8" />
+              </TouchableOpacity>
+            </View>
+          ) : (
+            <Text style={styles.subtitle}>
+              {history.length} {history.length === 1 ? "reading" : "readings"} recorded
+            </Text>
+          )}
+
+          <View style={styles.headerActions}>
+            <TouchableOpacity style={styles.actionButton} onPress={openCalendar}>
+              <Ionicons name="calendar-outline" size={16} color="#f0ebd8" />
+              <Text style={styles.actionButtonText}>
+                {activeRange ? "Change range" : "Filter by date"}
+              </Text>
+            </TouchableOpacity>
+            <TouchableOpacity style={styles.actionButton} onPress={handleExport}>
+              <MaterialIcons name="file-download" size={16} color="#f0ebd8" />
+              <Text style={styles.actionButtonText}>Export</Text>
+            </TouchableOpacity>
+          </View>
         </LinearGradient>
 
+        {/* ── List ── */}
         <View style={styles.content}>
-          {history.length === 0 ? (
+          {filteredHistory.length === 0 ? (
             <View style={styles.emptyState}>
-              <Text style={styles.emptyIcon}>
-                <Ionicons
-                  name="stats-chart-outline"
-                  size={24}
-                  color="#f0ebd8"
-                />
+              <Ionicons name="stats-chart-outline" size={48} color="#3e5c76" />
+              <Text style={styles.emptyTitle}>
+                {activeRange ? "No readings in this range" : "No readings yet"}
               </Text>
-              <Text style={styles.emptyTitle}>No readings yet</Text>
               <Text style={styles.emptySubtitle}>
-                Start monitoring your heart rate to see your history
+                {activeRange
+                  ? "Try a different date range"
+                  : "Start monitoring your heart rate to see your history"}
               </Text>
             </View>
           ) : (
-            history.map((item) => (
+            filteredHistory.map((item) => (
               <Swipeable
                 key={item.id}
                 overshootRight={false}
@@ -402,12 +444,8 @@ export default function History() {
               >
                 <View style={styles.historyCard}>
                   <View style={styles.cardLeft}>
-                    <Text style={styles.cardDate}>
-                      {formatDate(item.created_at)}
-                    </Text>
-                    <Text style={styles.cardTime}>
-                      {formatTime(item.created_at)}
-                    </Text>
+                    <Text style={styles.cardDate}>{formatDate(item.created_at)}</Text>
+                    <Text style={styles.cardTime}>{formatTime(item.created_at)}</Text>
                   </View>
                   <LinearGradient
                     colors={["#3e5c76", "#748cab"]}
@@ -424,18 +462,93 @@ export default function History() {
           )}
         </View>
       </ScrollView>
+
+      {/* ── Calendar Modal ── */}
+      <Modal
+        visible={calendarVisible}
+        transparent
+        animationType="slide"
+        onRequestClose={() => setCalendarVisible(false)}
+      >
+        <TouchableOpacity
+          style={calStyles.overlay}
+          activeOpacity={1}
+          onPress={() => setCalendarVisible(false)}
+        />
+        <View style={[calStyles.sheet, { paddingBottom: insets.bottom + 16 }]}>
+          {/* Month navigation */}
+          <View style={calStyles.monthHeader}>
+            <TouchableOpacity
+              onPress={() =>
+                setCalendarMonth(
+                  (m) => new Date(m.getFullYear(), m.getMonth() - 1, 1),
+                )
+              }
+              hitSlop={{ top: 12, bottom: 12, left: 16, right: 16 }}
+            >
+              <Ionicons name="chevron-back" size={22} color="#f0ebd8" />
+            </TouchableOpacity>
+
+            <Text style={calStyles.monthTitle}>
+              {MONTH_NAMES[calendarMonth.getMonth()]} {calendarMonth.getFullYear()}
+            </Text>
+
+            <TouchableOpacity
+              onPress={() =>
+                setCalendarMonth(
+                  (m) => new Date(m.getFullYear(), m.getMonth() + 1, 1),
+                )
+              }
+              hitSlop={{ top: 12, bottom: 12, left: 16, right: 16 }}
+            >
+              <Ionicons name="chevron-forward" size={22} color="#f0ebd8" />
+            </TouchableOpacity>
+          </View>
+
+          {/* Day-of-week headers */}
+          <View style={calStyles.weekRow}>
+            {DAY_HEADERS.map((d) => (
+              <View key={d} style={calStyles.dayCell}>
+                <Text style={calStyles.dayHeaderText}>{d}</Text>
+              </View>
+            ))}
+          </View>
+
+          {/* Day grid */}
+          {renderCalendarGrid()}
+
+          {/* Selection hint */}
+          <Text style={calStyles.hint}>
+            {!rangeStart
+              ? "Tap a day to set start date"
+              : !rangeEnd
+                ? "Tap another day to set end date"
+                : `${formatRangeLabel(rangeStart)} – ${formatRangeLabel(rangeEnd)}`}
+          </Text>
+
+          {/* Actions */}
+          <View style={calStyles.actions}>
+            <TouchableOpacity style={calStyles.clearBtn} onPress={clearRange}>
+              <Text style={calStyles.clearBtnText}>Clear filter</Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={[calStyles.applyBtn, !rangeStart && calStyles.applyBtnDisabled]}
+              onPress={applyRange}
+              disabled={!rangeStart}
+            >
+              <Text style={calStyles.applyBtnText}>Apply</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      </Modal>
     </View>
   );
 }
 
+// ── List styles ─────────────────────────────────────────────────────────────
 const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-    backgroundColor: "#050000",
-  },
-  scrollView: {
-    flex: 1,
-  },
+  container: { flex: 1, backgroundColor: "#050000" },
+  scrollView: { flex: 1 },
   header: {
     paddingHorizontal: 20,
     paddingBottom: 24,
@@ -461,27 +574,45 @@ const styles = StyleSheet.create({
     textAlign: "center",
     fontWeight: "500",
   },
-  exportButton: {
-    marginTop: 12,
-    alignSelf: "center",
+  filterActive: {
     flexDirection: "row",
     alignItems: "center",
-    gap: 8,
+    justifyContent: "center",
+    gap: 6,
+    flexWrap: "wrap",
+  },
+  filterActiveText: {
+    fontSize: 14,
+    color: "#f0ebd8",
+    fontWeight: "600",
+  },
+  filterCount: {
+    fontSize: 14,
+    color: "#b8c5d6",
+  },
+  headerActions: {
+    flexDirection: "row",
+    justifyContent: "center",
+    gap: 10,
+    marginTop: 14,
+  },
+  actionButton: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
     paddingHorizontal: 14,
-    paddingVertical: 10,
+    paddingVertical: 9,
     borderRadius: 999,
     borderWidth: 1,
     borderColor: "#3e5c76",
     backgroundColor: "#0d1321",
   },
-  exportButtonText: {
+  actionButtonText: {
     color: "#f0ebd8",
-    fontSize: 14,
+    fontSize: 13,
     fontWeight: "600",
   },
-  content: {
-    padding: 16,
-  },
+  content: { padding: 16 },
   historyCard: {
     backgroundColor: "#050000",
     borderRadius: 12,
@@ -493,27 +624,14 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: "#3e5c76",
     shadowColor: "#0d1321",
-    shadowOffset: {
-      width: 0,
-      height: 1,
-    },
+    shadowOffset: { width: 0, height: 1 },
     shadowOpacity: 0.1,
     shadowRadius: 2,
     elevation: 2,
   },
-  cardLeft: {
-    flex: 1,
-  },
-  cardDate: {
-    fontSize: 16,
-    fontWeight: "600",
-    color: "#f0ebd8",
-    marginBottom: 4,
-  },
-  cardTime: {
-    fontSize: 14,
-    color: "#748cab",
-  },
+  cardLeft: { flex: 1 },
+  cardDate: { fontSize: 16, fontWeight: "600", color: "#f0ebd8", marginBottom: 4 },
+  cardTime: { fontSize: 14, color: "#748cab" },
   bpmBadge: {
     paddingHorizontal: 20,
     paddingVertical: 12,
@@ -521,21 +639,9 @@ const styles = StyleSheet.create({
     alignItems: "center",
     minWidth: 80,
   },
-  bpmValue: {
-    fontSize: 24,
-    fontWeight: "bold",
-    color: "#f0ebd8",
-  },
-  bpmLabel: {
-    fontSize: 12,
-    color: "#f0ebd8",
-    marginTop: 2,
-  },
-  swipeActions: {
-    justifyContent: "center",
-    alignItems: "center",
-    marginBottom: 20,
-  },
+  bpmValue: { fontSize: 24, fontWeight: "bold", color: "#f0ebd8" },
+  bpmLabel: { fontSize: 12, color: "#f0ebd8", marginTop: 2 },
+  swipeActions: { justifyContent: "center", alignItems: "center", marginBottom: 20 },
   swipeDeleteAction: {
     width: 96,
     height: "100%",
@@ -546,37 +652,115 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: "#28080eff",
   },
-  swipeDeleteText: {
-    marginTop: 2,
-    fontSize: 12,
-    fontWeight: "600",
-    color: "#f0ebd8",
-  },
-  emptyState: {
+  swipeDeleteText: { marginTop: 2, fontSize: 12, fontWeight: "600", color: "#f0ebd8" },
+  emptyState: { flex: 1, alignItems: "center", justifyContent: "center", paddingVertical: 60 },
+  emptyTitle: { fontSize: 20, fontWeight: "bold", color: "#f0ebd8", marginBottom: 8, marginTop: 12 },
+  emptySubtitle: { fontSize: 14, color: "#748cab", textAlign: "center", paddingHorizontal: 40 },
+  loadingText: { fontSize: 16, color: "#748cab", marginTop: 16 },
+});
+
+// ── Calendar styles ──────────────────────────────────────────────────────────
+const calStyles = StyleSheet.create({
+  overlay: {
     flex: 1,
-    alignItems: "center",
-    justifyContent: "center",
-    paddingVertical: 60,
+    backgroundColor: "rgba(0,0,0,0.6)",
   },
-  emptyIcon: {
-    fontSize: 64,
+  sheet: {
+    backgroundColor: "#0d1321",
+    borderTopLeftRadius: 24,
+    borderTopRightRadius: 24,
+    paddingHorizontal: 20,
+    paddingTop: 20,
+  },
+  monthHeader: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
     marginBottom: 16,
   },
-  emptyTitle: {
-    fontSize: 20,
-    fontWeight: "bold",
+  monthTitle: {
+    fontSize: 18,
+    fontWeight: "700",
     color: "#f0ebd8",
-    marginBottom: 8,
   },
-  emptySubtitle: {
-    fontSize: 14,
+  weekRow: {
+    flexDirection: "row",
+  },
+  dayCell: {
+    width: CELL_SIZE,
+    height: CELL_SIZE,
+    justifyContent: "center",
+    alignItems: "center",
+  },
+  dayCellInRange: {
+    backgroundColor: "#1d2d44",
+  },
+  dayInner: {
+    width: CELL_SIZE - 6,
+    height: CELL_SIZE - 6,
+    borderRadius: (CELL_SIZE - 6) / 2,
+    justifyContent: "center",
+    alignItems: "center",
+  },
+  dayInnerSelected: {
+    backgroundColor: "#3e5c76",
+  },
+  dayHeaderText: {
+    fontSize: 12,
+    fontWeight: "600",
     color: "#748cab",
+  },
+  dayText: {
+    fontSize: 15,
+    color: "#f0ebd8",
+    fontWeight: "400",
+  },
+  dayTextSelected: {
+    color: "#f0ebd8",
+    fontWeight: "700",
+  },
+  dayTextInRange: {
+    color: "#b8c5d6",
+  },
+  hint: {
     textAlign: "center",
-    paddingHorizontal: 40,
-  },
-  loadingText: {
-    fontSize: 16,
+    fontSize: 13,
     color: "#748cab",
+    marginTop: 14,
+    marginBottom: 4,
+    minHeight: 18,
+  },
+  actions: {
+    flexDirection: "row",
+    gap: 12,
     marginTop: 16,
+  },
+  clearBtn: {
+    flex: 1,
+    paddingVertical: 14,
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: "#3e5c76",
+    alignItems: "center",
+  },
+  clearBtnText: {
+    color: "#748cab",
+    fontSize: 15,
+    fontWeight: "600",
+  },
+  applyBtn: {
+    flex: 1,
+    paddingVertical: 14,
+    borderRadius: 14,
+    backgroundColor: "#3e5c76",
+    alignItems: "center",
+  },
+  applyBtnDisabled: {
+    opacity: 0.4,
+  },
+  applyBtnText: {
+    color: "#f0ebd8",
+    fontSize: 15,
+    fontWeight: "700",
   },
 });
