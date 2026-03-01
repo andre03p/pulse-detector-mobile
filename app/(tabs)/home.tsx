@@ -97,7 +97,7 @@ export default function Home() {
               end={{ x: 1, y: 0 }}
               style={styles.button}
             >
-              <Text style={styles.buttonText}>Begin Monitoring</Text>
+              <Text style={styles.buttonText}>START</Text>
             </LinearGradient>
           </TouchableOpacity>
         </View>
