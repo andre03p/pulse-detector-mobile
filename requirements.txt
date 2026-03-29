@@ -1,0 +1,7 @@
+mobile app in react native
+it has to detect biological signals using the phone's sensors 
+and provide real-time feedback to the user 
+Thetapp should be able to monitor heart rate using phone's camera and flashlight
+and provide insights on the user's health based on the collected data.
+i need state of the art algorithms for heart rate detection and health insights
+also digital signal processing techniques to analyze the data from the phone's sensors

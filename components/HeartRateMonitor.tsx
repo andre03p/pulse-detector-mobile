@@ -1,17 +1,14 @@
 import PulseWave from "@/components/PulseWave";
 import { addMeasurement } from "@/lib/supabaseQueries";
 import {
-  assessSignalQuality,
   ButterworthFilter,
   calculateHRV,
   calculateIBI,
-  calculatePerfusionIndex,
-  calculateSNR,
-  calculateSQI,
-  estimateHeartRateAutocorrelation,
+  checkSignalQuality,
+  estimateHeartRateEnsemble,
   estimateRespirationRate,
   HRVMetrics,
-  weightedMedian,
+  median,
 } from "@/utils/heartRateDetection";
 import Entypo from "@expo/vector-icons/Entypo";
 import Ionicons from "@expo/vector-icons/Ionicons";
@@ -20,7 +17,6 @@ import React, { useCallback, useEffect, useRef, useState } from "react";
 import {
   Alert,
   Animated,
-  ScrollView,
   StyleSheet,
   Text,
   TouchableOpacity,
@@ -36,61 +32,45 @@ import {
 import { Worklets } from "react-native-worklets-core";
 import { useResizePlugin } from "vision-camera-resize-plugin";
 
-interface HeartRateResult {
-  bpm: number;
-  timestamp: Date;
-}
-
-interface AdvancedMetrics {
-  ibi: number;
+interface Metrics {
   hrv: HRVMetrics;
   rr: number;
-  pi: number;
-  snr: number;
-  sqi: number;
 }
 
 const SAMPLING_RATE = 30;
-const WINDOW_SIZE = 180;
+const WINDOW_SIZE = 270; // 9 s of signal at 30 fps — enough for RR (needs 8 s) and good FFT resolution
 const FINGER_DETECTED_THRESHOLD = 80;
 const FINGER_LOST_THRESHOLD = 40;
 const MIN_VALID_BPM = 30;
 const MAX_VALID_BPM = 200;
-const MIN_QUALITY_SCORE = 0.5;
 
 export default function HeartRateMonitor() {
   const [isMonitoring, setIsMonitoring] = useState(false);
   const [currentBPM, setCurrentBPM] = useState<number | null>(null);
   const [progress, setProgress] = useState(0);
   const [fingerDetected, setFingerDetected] = useState(false);
-  const [isSaving, setIsSaving] = useState(false);
   const [waveform, setWaveform] = useState<number[]>([]);
-  const [advancedMetrics, setAdvancedMetrics] =
-    useState<AdvancedMetrics | null>(null);
+  const [metrics, setMetrics] = useState<Metrics | null>(null);
 
   const pulseAnim = useRef(new Animated.Value(1)).current;
   const fadeAnim = useRef(new Animated.Value(0)).current;
 
   const device = useCameraDevice("back");
   const { hasPermission, requestPermission } = useCameraPermission();
-
   const format = useCameraFormat(device, [{ fps: SAMPLING_RATE }]);
-
   const { resize } = useResizePlugin();
 
   const filterRef = useRef(new ButterworthFilter(SAMPLING_RATE));
-
   const dataBufferRef = useRef<number[]>([]);
-
   const detectionPhaseRef = useRef<"waiting" | "measuring">("waiting");
   const validReadingsRef = useRef<number[]>([]);
   const lastProcessTimeRef = useRef<number>(0);
   const lastWaveUpdateRef = useRef<number>(0);
+  const metricsRef = useRef<Metrics | null>(null);
 
   useEffect(() => {
     if (fingerDetected && currentBPM) {
       const interval = 60000 / currentBPM;
-
       const pulse = Animated.sequence([
         Animated.timing(pulseAnim, {
           toValue: 1.2,
@@ -124,7 +104,6 @@ export default function HeartRateMonitor() {
       if (avgRed > FINGER_DETECTED_THRESHOLD) {
         setFingerDetected(true);
         detectionPhaseRef.current = "measuring";
-
         dataBufferRef.current = [];
         validReadingsRef.current = [];
         filterRef.current.reset();
@@ -143,87 +122,68 @@ export default function HeartRateMonitor() {
         return;
       }
 
-      const filteredValue = filterRef.current.process(avgRed);
+      const filtered = filterRef.current.process(avgRed);
 
+      // Reject frames with sudden large jumps (motion artifact)
       if (dataBufferRef.current.length > 5) {
-        const lastValue =
-          dataBufferRef.current[dataBufferRef.current.length - 1];
-        const change = Math.abs(filteredValue - lastValue);
-
-        if (change > 10) {
+        const last = dataBufferRef.current[dataBufferRef.current.length - 1];
+        if (Math.abs(filtered - last) > 10) {
           dataBufferRef.current = dataBufferRef.current.slice(0, -5);
           return;
         }
       }
 
-      dataBufferRef.current.push(filteredValue);
-
+      dataBufferRef.current.push(filtered);
       if (dataBufferRef.current.length > WINDOW_SIZE) {
         dataBufferRef.current.shift();
       }
 
+      // Throttle waveform updates to ~8 fps
       if (now - lastWaveUpdateRef.current > 120) {
         lastWaveUpdateRef.current = now;
         setWaveform(dataBufferRef.current.slice(-120));
       }
 
-      const currentProgress = Math.min(
-        dataBufferRef.current.length / WINDOW_SIZE,
-        1,
-      );
-      setProgress(currentProgress);
+      setProgress(Math.min(dataBufferRef.current.length / WINDOW_SIZE, 1));
 
+      // Run analysis every 500 ms once buffer is full
       if (
         dataBufferRef.current.length === WINDOW_SIZE &&
         now - lastProcessTimeRef.current > 500
       ) {
         lastProcessTimeRef.current = now;
 
-        const quality = assessSignalQuality(dataBufferRef.current);
+        if (!checkSignalQuality(dataBufferRef.current)) return;
 
-        if (quality >= MIN_QUALITY_SCORE) {
-          const estimatedBPM = estimateHeartRateAutocorrelation(
-            dataBufferRef.current,
-            SAMPLING_RATE,
-          );
+        // Ensemble HR: FFT + autocorrelation
+        const estimate = estimateHeartRateEnsemble(
+          dataBufferRef.current,
+          SAMPLING_RATE,
+        );
 
-          if (estimatedBPM >= MIN_VALID_BPM && estimatedBPM <= MAX_VALID_BPM) {
-            validReadingsRef.current.push(estimatedBPM);
+        if (
+          estimate.bpm >= MIN_VALID_BPM &&
+          estimate.bpm <= MAX_VALID_BPM &&
+          estimate.confidence >= 0.4
+        ) {
+          validReadingsRef.current.push(estimate.bpm);
 
-            const smoothed = weightedMedian(validReadingsRef.current.slice(-7));
-            setCurrentBPM(Math.round(smoothed));
+          // Smooth over last 5 estimates
+          const smoothed = median(validReadingsRef.current.slice(-5));
+          setCurrentBPM(Math.round(smoothed));
 
-            const ibis = calculateIBI(dataBufferRef.current, SAMPLING_RATE);
-            const avgIBI =
-              ibis.length > 0
-                ? ibis.reduce((a, b) => a + b, 0) / ibis.length
-                : 0;
+          // HRV
+          const ibis = calculateIBI(dataBufferRef.current, SAMPLING_RATE);
+          const hrv = calculateHRV(ibis);
 
-            const hrv = calculateHRV(ibis);
+          // Respiratory rate (needs ≥ 8 s of data)
+          const rr = estimateRespirationRate(dataBufferRef.current, SAMPLING_RATE);
 
-            const rr = estimateRespirationRate(
-              dataBufferRef.current,
-              SAMPLING_RATE,
-            );
+          metricsRef.current = { hrv, rr };
+          setMetrics({ hrv, rr });
 
-            const pi = calculatePerfusionIndex(dataBufferRef.current);
-
-            const snr = calculateSNR(dataBufferRef.current);
-
-            const sqi = calculateSQI(dataBufferRef.current);
-
-            setAdvancedMetrics({
-              ibi: avgIBI,
-              hrv,
-              rr,
-              pi,
-              snr,
-              sqi,
-            });
-
-            if (validReadingsRef.current.length >= 12) {
-              finalizeMeasurement(Math.round(smoothed));
-            }
+          if (validReadingsRef.current.length >= 12) {
+            finalizeMeasurement(Math.round(smoothed));
           }
         }
       }
@@ -248,9 +208,7 @@ export default function HeartRateMonitor() {
       for (let i = 0; i < resized.length; i += 3) {
         totalRed += resized[i];
       }
-      const avgRed = totalRed / numPixels;
-
-      runOnJsHandler(avgRed);
+      runOnJsHandler(totalRed / numPixels);
     },
     [isMonitoring, runOnJsHandler, resize],
   );
@@ -260,12 +218,12 @@ export default function HeartRateMonitor() {
       const granted = await requestPermission();
       if (!granted) return;
     }
-
     filterRef.current.reset();
     dataBufferRef.current = [];
     validReadingsRef.current = [];
+    metricsRef.current = null;
     setCurrentBPM(null);
-    setAdvancedMetrics(null);
+    setMetrics(null);
     setWaveform([]);
     setFingerDetected(false);
     detectionPhaseRef.current = "waiting";
@@ -280,20 +238,23 @@ export default function HeartRateMonitor() {
   }, []);
 
   const finalizeMeasurement = async (finalBPM: number) => {
+    const finalMetrics = metricsRef.current;
     stopMonitoring();
-    setIsSaving(true);
-
     const { error } = await addMeasurement(finalBPM);
-    setIsSaving(false);
 
-    if (error) {
-      Alert.alert(
-        "Recorded",
-        `${finalBPM} BPM (Save Failed: ${error.message})`,
-      );
-    } else {
-      Alert.alert("Success", `${finalBPM} BPM`);
+    const lines: string[] = [`Heart Rate: ${finalBPM} BPM`];
+    if (finalMetrics) {
+      if (finalMetrics.hrv.sdnn > 0) {
+        lines.push(`SDNN: ${finalMetrics.hrv.sdnn.toFixed(1)} ms`);
+        lines.push(`RMSSD: ${finalMetrics.hrv.rmssd.toFixed(1)} ms`);
+      }
+      if (finalMetrics.rr > 0) {
+        lines.push(`Respiration: ${finalMetrics.rr.toFixed(1)} br/min`);
+      }
     }
+    if (error) lines.push(`(Save failed: ${error.message})`);
+
+    Alert.alert("Measurement Complete", lines.join("\n"));
   };
 
   if (!device || !hasPermission)
@@ -302,10 +263,7 @@ export default function HeartRateMonitor() {
         <View style={styles.permissionContainer}>
           <Entypo name="camera" size={60} colors={["#28080eff", "#920c0cff"]} />
           <Text style={styles.permissionText}>Camera Access Required</Text>
-          <TouchableOpacity
-            onPress={requestPermission}
-            style={styles.permissionBtn}
-          >
+          <TouchableOpacity onPress={requestPermission} style={styles.permissionBtn}>
             <Text style={styles.permissionBtnText}>Grant Permission</Text>
           </TouchableOpacity>
         </View>
@@ -374,95 +332,32 @@ export default function HeartRateMonitor() {
 
                 <PulseWave data={waveform} height={80} />
 
-                {advancedMetrics && (
-                  <ScrollView
-                    style={styles.metricsScroll}
-                    showsVerticalScrollIndicator={false}
-                  >
-                    <View style={styles.metricsGrid}>
-                      <View style={styles.metricCard}>
-                        <Text style={styles.metricLabel}>IBI</Text>
-                        <Text style={styles.metricValue}>
-                          {advancedMetrics.ibi.toFixed(0)}
-                        </Text>
-                        <Text style={styles.metricUnit}>ms</Text>
-                      </View>
-
-                      <View style={styles.metricCard}>
-                        <Text style={styles.metricLabel}>SDNN</Text>
-                        <Text style={styles.metricValue}>
-                          {advancedMetrics.hrv.sdnn.toFixed(1)}
-                        </Text>
-                        <Text style={styles.metricUnit}>ms</Text>
-                      </View>
-
-                      <View style={styles.metricCard}>
-                        <Text style={styles.metricLabel}>RMSSD</Text>
-                        <Text style={styles.metricValue}>
-                          {advancedMetrics.hrv.rmssd.toFixed(1)}
-                        </Text>
-                        <Text style={styles.metricUnit}>ms</Text>
-                      </View>
-
-                      <View style={styles.metricCard}>
-                        <Text style={styles.metricLabel}>pNN50</Text>
-                        <Text style={styles.metricValue}>
-                          {advancedMetrics.hrv.pnn50.toFixed(1)}
-                        </Text>
-                        <Text style={styles.metricUnit}>%</Text>
-                      </View>
-
-                      <View style={styles.metricCard}>
-                        <Text style={styles.metricLabel}>NN50</Text>
-                        <Text style={styles.metricValue}>
-                          {advancedMetrics.hrv.nn50.toFixed(0)}
-                        </Text>
-                        <Text style={styles.metricUnit}>count</Text>
-                      </View>
-
-                      <View style={styles.metricCard}>
-                        <Text style={styles.metricLabel}>LF/HF</Text>
-                        <Text style={styles.metricValue}>
-                          {advancedMetrics.hrv.lfHfRatio.toFixed(2)}
-                        </Text>
-                        <Text style={styles.metricUnit}>ratio</Text>
-                      </View>
-
-                      <View style={styles.metricCard}>
-                        <Text style={styles.metricLabel}>RR</Text>
-                        <Text style={styles.metricValue}>
-                          {advancedMetrics.rr > 0
-                            ? advancedMetrics.rr.toFixed(1)
-                            : "--"}
-                        </Text>
-                        <Text style={styles.metricUnit}>br/min</Text>
-                      </View>
-
-                      <View style={styles.metricCard}>
-                        <Text style={styles.metricLabel}>PI</Text>
-                        <Text style={styles.metricValue}>
-                          {advancedMetrics.pi.toFixed(2)}
-                        </Text>
-                        <Text style={styles.metricUnit}>%</Text>
-                      </View>
-
-                      <View style={styles.metricCard}>
-                        <Text style={styles.metricLabel}>SNR</Text>
-                        <Text style={styles.metricValue}>
-                          {advancedMetrics.snr.toFixed(1)}
-                        </Text>
-                        <Text style={styles.metricUnit}>dB</Text>
-                      </View>
-
-                      <View style={styles.metricCard}>
-                        <Text style={styles.metricLabel}>SQI</Text>
-                        <Text style={styles.metricValue}>
-                          {advancedMetrics.sqi.toFixed(0)}
-                        </Text>
-                        <Text style={styles.metricUnit}>%</Text>
-                      </View>
+                {metrics && (
+                  <View style={styles.metricsRow}>
+                    <View style={styles.metricCard}>
+                      <Text style={styles.metricLabel}>SDNN</Text>
+                      <Text style={styles.metricValue}>
+                        {metrics.hrv.sdnn > 0 ? metrics.hrv.sdnn.toFixed(1) : "--"}
+                      </Text>
+                      <Text style={styles.metricUnit}>ms</Text>
                     </View>
-                  </ScrollView>
+
+                    <View style={styles.metricCard}>
+                      <Text style={styles.metricLabel}>RMSSD</Text>
+                      <Text style={styles.metricValue}>
+                        {metrics.hrv.rmssd > 0 ? metrics.hrv.rmssd.toFixed(1) : "--"}
+                      </Text>
+                      <Text style={styles.metricUnit}>ms</Text>
+                    </View>
+
+                    <View style={styles.metricCard}>
+                      <Text style={styles.metricLabel}>RR</Text>
+                      <Text style={styles.metricValue}>
+                        {metrics.rr > 0 ? metrics.rr.toFixed(1) : "--"}
+                      </Text>
+                      <Text style={styles.metricUnit}>br/min</Text>
+                    </View>
+                  </View>
                 )}
 
                 <View style={styles.progressContainer}>
@@ -736,6 +631,42 @@ const styles = StyleSheet.create({
     fontSize: 14,
     fontWeight: "600",
   },
+
+  metricsRow: {
+    flexDirection: "row",
+    gap: 10,
+    marginBottom: 20,
+    marginTop: 8,
+  },
+  metricCard: {
+    backgroundColor: "rgba(233, 69, 96, 0.1)",
+    borderWidth: 1,
+    borderColor: "rgba(233, 69, 96, 0.2)",
+    borderRadius: 14,
+    paddingHorizontal: 14,
+    paddingVertical: 10,
+    alignItems: "center",
+    minWidth: 78,
+  },
+  metricLabel: {
+    color: "#920c0cff",
+    fontSize: 10,
+    fontWeight: "700",
+    letterSpacing: 0.5,
+    marginBottom: 2,
+  },
+  metricValue: {
+    color: "#fff",
+    fontSize: 18,
+    fontWeight: "700",
+  },
+  metricUnit: {
+    color: "#a0a0a0",
+    fontSize: 9,
+    fontWeight: "500",
+    marginTop: 1,
+  },
+
   progressContainer: {
     width: "100%",
     alignItems: "center",
@@ -758,46 +689,6 @@ const styles = StyleSheet.create({
     color: "#a0a0a0",
     fontSize: 13,
     fontWeight: "600",
-  },
-
-  metricsScroll: {
-    maxHeight: 200,
-    width: "100%",
-    marginBottom: 16,
-  },
-  metricsGrid: {
-    flexDirection: "row",
-    flexWrap: "wrap",
-    gap: 8,
-    justifyContent: "center",
-    paddingVertical: 8,
-  },
-  metricCard: {
-    backgroundColor: "rgba(233, 69, 96, 0.1)",
-    borderWidth: 1,
-    borderColor: "rgba(233, 69, 96, 0.2)",
-    borderRadius: 12,
-    padding: 8,
-    minWidth: 70,
-    alignItems: "center",
-  },
-  metricLabel: {
-    color: "#920c0cff",
-    fontSize: 10,
-    fontWeight: "700",
-    letterSpacing: 0.5,
-    marginBottom: 2,
-  },
-  metricValue: {
-    color: "#fff",
-    fontSize: 18,
-    fontWeight: "700",
-  },
-  metricUnit: {
-    color: "#a0a0a0",
-    fontSize: 9,
-    fontWeight: "500",
-    marginTop: 1,
   },
 
   cancelBtn: {

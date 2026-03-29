@@ -1,11 +1,10 @@
 import {
-  calculateAdvancedSQI,
   calculateHRV,
   calculateIBI,
-  calculatePerfusionIndex,
-  calculateSNR,
+  checkSignalQuality,
   estimateHeartRateAutocorrelation,
   estimateHeartRateEnsemble,
+  estimateRespirationRate,
   type HeartRateEstimate,
   type HRVMetrics,
 } from "./heartRateDetection";
@@ -19,9 +18,7 @@ import {
 
 export interface PPGAnalysisResult {
   heartRate: HeartRateEstimate;
-  signalQuality: number;
-  perfusionIndex: number;
-  snr: number;
+  signalQuality: boolean;
   hrv?: HRVMetrics;
   respirationRate?: number;
 }
@@ -30,7 +27,6 @@ export interface MeasurementConfig {
   targetDuration: number;
   minDuration: number;
   maxDuration: number;
-  minQualityThreshold: number;
   minConfidence: number;
   samplingRate: number;
   enableThermalCompensation: boolean;
@@ -42,7 +38,6 @@ export interface MeasurementStatus {
   progress: number;
   heartRate: number;
   confidence: number;
-  signalQuality: number;
   thermalState: ThermalState | null;
   message: string;
   canStop: boolean;
@@ -53,7 +48,6 @@ export interface FinalResult {
   success: boolean;
   heartRate: number;
   confidence: number;
-  signalQuality: number;
   measurementDuration: number;
   thermalInfo: {
     peakTemperature: number;
@@ -61,6 +55,7 @@ export interface FinalResult {
     compensationApplied: boolean;
   };
   hrv?: HRVMetrics;
+  respirationRate?: number;
   warning?: string;
   recommendation?: string;
 }
@@ -82,7 +77,6 @@ export class ThermalAwarePPGAnalyzer {
       targetDuration: 15,
       minDuration: 10,
       maxDuration: 20,
-      minQualityThreshold: 50,
       minConfidence: 0.7,
       samplingRate: 30,
       enableThermalCompensation: true,
@@ -99,7 +93,6 @@ export class ThermalAwarePPGAnalyzer {
       progress: 0,
       heartRate: 0,
       confidence: 0,
-      signalQuality: 0,
       thermalState: null,
       message: "Ready to start",
       canStop: false,
@@ -119,23 +112,15 @@ export class ThermalAwarePPGAnalyzer {
     }
 
     if (this.status.phase === "measuring") {
-      return {
-        ready: false,
-        message: "Measurement already in progress",
-      };
+      return { ready: false, message: "Measurement already in progress" };
     }
 
-    return {
-      ready: true,
-      message: "Ready to start measurement",
-    };
+    return { ready: true, message: "Ready to start measurement" };
   }
 
   start(): boolean {
     const check = this.canStart();
-    if (!check.ready) {
-      return false;
-    }
+    if (!check.ready) return false;
 
     this.buffer = [];
     this.startTime = Date.now();
@@ -150,7 +135,6 @@ export class ThermalAwarePPGAnalyzer {
       message: "Starting measurement...",
       heartRate: 0,
       confidence: 0,
-      signalQuality: 0,
       thermalState: null,
       canStop: false,
       shouldStop: false,
@@ -159,17 +143,16 @@ export class ThermalAwarePPGAnalyzer {
     return true;
   }
 
-  processFrame(greenChannelMean: number): MeasurementStatus {
+  processFrame(redChannelMean: number): MeasurementStatus {
     if (this.status.phase === "idle" || this.status.phase === "complete") {
       return this.status;
     }
 
-    this.buffer.push(greenChannelMean);
+    this.buffer.push(redChannelMean);
 
     const elapsedSeconds = (Date.now() - this.startTime) / 1000;
     const bufferSeconds = this.buffer.length / this.config.samplingRate;
 
-    // Warmup phase
     if (bufferSeconds < 5) {
       this.status = {
         ...this.status,
@@ -180,7 +163,6 @@ export class ThermalAwarePPGAnalyzer {
       return this.status;
     }
 
-    // Measuring phase
     if (
       bufferSeconds >= this.config.minDuration ||
       this.buffer.length >= this.config.samplingRate * 8
@@ -194,11 +176,7 @@ export class ThermalAwarePPGAnalyzer {
         );
       }
 
-      // Store good results
-      if (
-        result.confidence >= this.config.minConfidence &&
-        result.signalQuality >= this.config.minQualityThreshold
-      ) {
+      if (result.confidence >= this.config.minConfidence && result.signalQuality) {
         this.lastGoodResult = {
           heartRate: {
             bpm: result.heartRate,
@@ -206,8 +184,8 @@ export class ThermalAwarePPGAnalyzer {
             method: "ensemble_thermal",
           },
           signalQuality: result.signalQuality,
-          perfusionIndex: result.perfusionIndex,
-          snr: result.snr,
+          hrv: result.hrv,
+          respirationRate: result.respirationRate,
         };
       }
 
@@ -216,7 +194,7 @@ export class ThermalAwarePPGAnalyzer {
 
       const canStop =
         result.confidence >= this.config.minConfidence &&
-        result.signalQuality >= this.config.minQualityThreshold &&
+        result.signalQuality &&
         bufferSeconds >= this.config.minDuration;
 
       const shouldStop =
@@ -229,7 +207,6 @@ export class ThermalAwarePPGAnalyzer {
         progress,
         heartRate: result.heartRate,
         confidence: result.confidence,
-        signalQuality: result.signalQuality,
         thermalState: result.thermalState,
         message: result.adaptiveRecommendation,
         canStop,
@@ -249,7 +226,6 @@ export class ThermalAwarePPGAnalyzer {
   }
 
   private analyzeCurrentBuffer(): ThermalAwarePPGResult {
-    // Apply thermal compensation if enabled
     let processedSignal = this.buffer;
     let thermalState: ThermalState | null = null;
 
@@ -259,32 +235,22 @@ export class ThermalAwarePPGAnalyzer {
       thermalState = result.thermalState;
     }
 
-    // Analyze signal
-    const analysis = this.analyzePPGSignal(
-      processedSignal,
-      this.config.samplingRate,
-    );
-
+    const analysis = this.analyzePPGSignal(processedSignal, this.config.samplingRate);
     const elapsedSeconds = (Date.now() - this.startTime) / 1000;
 
-    // Generate recommendations
-    const shouldPause = this.shouldPauseMeasurement(
-      elapsedSeconds,
-      thermalState,
-    );
+    const shouldPause = this.shouldPauseMeasurement(elapsedSeconds, thermalState);
     const recommendation = this.generateRecommendation(
       elapsedSeconds,
       thermalState,
       analysis.heartRate.confidence,
-      analysis.signalQuality,
     );
 
     return {
       heartRate: analysis.heartRate.bpm,
       confidence: analysis.heartRate.confidence,
       signalQuality: analysis.signalQuality,
-      perfusionIndex: analysis.perfusionIndex,
-      snr: analysis.snr,
+      hrv: analysis.hrv,
+      respirationRate: analysis.respirationRate,
       thermalState,
       shouldPause,
       adaptiveRecommendation: recommendation,
@@ -292,47 +258,37 @@ export class ThermalAwarePPGAnalyzer {
   }
 
   private analyzePPGSignal(signal: number[], fs: number): PPGAnalysisResult {
-    const signalQuality = calculateAdvancedSQI(signal, fs);
-    const perfusionIndex = calculatePerfusionIndex(signal);
-    const snr = calculateSNR(signal);
+    const signalQuality = checkSignalQuality(signal);
 
-    if (signalQuality < this.config.minQualityThreshold) {
+    if (!signalQuality) {
       return {
         heartRate: { bpm: 0, confidence: 0, method: "low_quality" },
-        signalQuality,
-        perfusionIndex,
-        snr,
+        signalQuality: false,
       };
     }
 
-    let heartRate: HeartRateEstimate;
-    if (this.config.enableEnsembleMethod) {
-      heartRate = estimateHeartRateEnsemble(signal, fs);
-    } else {
-      const bpm = estimateHeartRateAutocorrelation(signal, fs);
-      heartRate = {
-        bpm,
-        confidence: bpm > 0 ? 0.7 : 0,
-        method: "autocorrelation",
-      };
-    }
+    const heartRate = this.config.enableEnsembleMethod
+      ? estimateHeartRateEnsemble(signal, fs)
+      : {
+          bpm: estimateHeartRateAutocorrelation(signal, fs),
+          confidence: 0.7,
+          method: "autocorrelation",
+        };
 
-    // Calculate HRV if enough data
     let hrv: HRVMetrics | undefined;
+    let respirationRate: number | undefined;
+
     if (signal.length >= fs * 15) {
       const ibis = calculateIBI(signal, fs);
-      if (ibis.length >= 10) {
-        hrv = calculateHRV(ibis);
-      }
+      if (ibis.length >= 5) hrv = calculateHRV(ibis);
     }
 
-    return {
-      heartRate,
-      signalQuality,
-      perfusionIndex,
-      snr,
-      hrv,
-    };
+    if (signal.length >= fs * 8) {
+      const rr = estimateRespirationRate(signal, fs);
+      if (rr > 0) respirationRate = rr;
+    }
+
+    return { heartRate, signalQuality, hrv, respirationRate };
   }
 
   private shouldPauseMeasurement(
@@ -349,42 +305,20 @@ export class ThermalAwarePPGAnalyzer {
     elapsedTime: number,
     thermal: ThermalState | null,
     confidence: number,
-    quality: number,
   ): string {
     if (thermal && thermal.estimatedTemperature > 4.5) {
-      return "🔥 Camera very hot - pause to cool down";
+      return "Camera very hot - pause to cool down";
     }
-
     if (thermal && Math.abs(thermal.driftRate) > 3.0) {
-      return "⚠️ Excessive thermal drift - pause to reset";
+      return "Excessive thermal drift - pause to reset";
     }
-
     if (elapsedTime < this.config.minDuration) {
-      if (quality < 50) {
-        return "📍 Adjust finger position for better signal";
-      }
-      return `⏱️ Measuring... ${Math.ceil(this.config.minDuration - elapsedTime)}s remaining`;
+      return `Measuring... ${Math.ceil(this.config.minDuration - elapsedTime)}s remaining`;
     }
-
-    if (
-      elapsedTime >= this.config.minDuration &&
-      elapsedTime <= this.config.maxDuration * 0.75
-    ) {
-      if (confidence > 0.7 && quality > 60) {
-        return "✅ Good measurement - you can stop now";
-      }
-      return "📊 Continue measuring for better accuracy";
+    if (confidence > 0.7) {
+      return "Good measurement - you can stop now";
     }
-
-    if (thermal && thermal.estimatedTemperature > 3.0) {
-      return "🌡️ Camera warming - complete measurement soon";
-    }
-
-    if (quality < 30) {
-      return "❌ Poor signal quality - check finger placement";
-    }
-
-    return "📊 Measuring...";
+    return "Continue measuring for better accuracy";
   }
 
   complete(): FinalResult {
@@ -403,8 +337,8 @@ export class ThermalAwarePPGAnalyzer {
           method: "thermal_aware",
         },
         signalQuality: analysis.signalQuality,
-        perfusionIndex: analysis.perfusionIndex,
-        snr: analysis.snr,
+        hrv: analysis.hrv,
+        respirationRate: analysis.respirationRate,
       };
     } else {
       this.status = {
@@ -412,12 +346,10 @@ export class ThermalAwarePPGAnalyzer {
         phase: "error",
         message: "Insufficient data collected",
       };
-
       return {
         success: false,
         heartRate: 0,
         confidence: 0,
-        signalQuality: 0,
         measurementDuration: elapsedSeconds,
         thermalInfo: {
           peakTemperature: this.peakTemperature,
@@ -432,33 +364,26 @@ export class ThermalAwarePPGAnalyzer {
 
     const success =
       finalResult.heartRate.confidence >= this.config.minConfidence * 0.8 &&
-      finalResult.signalQuality >= this.config.minQualityThreshold * 0.8;
+      finalResult.signalQuality;
 
-    let warning: string | undefined;
-    let recommendation: string | undefined;
-
-    if (!success) {
-      warning = "Low confidence measurement";
-      recommendation = "Consider retrying with better finger placement";
-    } else if (this.peakTemperature > 3.5) {
-      warning = "Camera heated during measurement";
-      recommendation = "Wait 60s before next measurement for best accuracy";
-    }
+    const warning = !success ? "Low confidence measurement" : undefined;
+    const recommendation = !success
+      ? "Consider retrying with better finger placement"
+      : this.peakTemperature > 3.5
+        ? "Wait 60s before next measurement for best accuracy"
+        : undefined;
 
     this.status = {
       ...this.status,
       phase: "complete",
       progress: 100,
-      message: success
-        ? "Measurement complete"
-        : "Measurement complete (low confidence)",
+      message: success ? "Measurement complete" : "Measurement complete (low confidence)",
     };
 
     return {
       success,
       heartRate: finalResult.heartRate.bpm,
       confidence: finalResult.heartRate.confidence,
-      signalQuality: finalResult.signalQuality,
       measurementDuration: elapsedSeconds,
       thermalInfo: {
         peakTemperature: this.peakTemperature,
@@ -466,6 +391,7 @@ export class ThermalAwarePPGAnalyzer {
         compensationApplied: this.config.enableThermalCompensation,
       },
       hrv: finalResult.hrv,
+      respirationRate: finalResult.respirationRate,
       warning,
       recommendation,
     };
@@ -489,7 +415,6 @@ export class ThermalAwarePPGAnalyzer {
       message: "Ready to start",
       heartRate: 0,
       confidence: 0,
-      signalQuality: 0,
       thermalState: null,
       canStop: false,
       shouldStop: false,
@@ -504,9 +429,9 @@ export class ThermalAwarePPGAnalyzer {
 export interface ThermalAwarePPGResult {
   heartRate: number;
   confidence: number;
-  signalQuality: number;
-  perfusionIndex: number;
-  snr: number;
+  signalQuality: boolean;
+  hrv?: HRVMetrics;
+  respirationRate?: number;
   thermalState: ThermalState | null;
   shouldPause: boolean;
   adaptiveRecommendation: string;
