@@ -5,12 +5,7 @@ import {
   ButterworthFilter,
   calculateHRV,
   calculateIBI,
-  calculatePerfusionIndex,
-  calculateSNR,
-  calculateSQI,
   estimateHeartRateAutocorrelation,
-  estimateRespirationRate,
-  HRVMetrics,
   weightedMedian,
 } from "@/utils/heartRateDetection";
 import Entypo from "@expo/vector-icons/Entypo";
@@ -20,7 +15,6 @@ import React, { useCallback, useEffect, useRef, useState } from "react";
 import {
   Alert,
   Animated,
-  ScrollView,
   StyleSheet,
   Text,
   TouchableOpacity,
@@ -42,12 +36,7 @@ interface HeartRateResult {
 }
 
 interface AdvancedMetrics {
-  ibi: number;
-  hrv: HRVMetrics;
-  rr: number;
-  pi: number;
-  snr: number;
-  sqi: number;
+  rmssd: number;
 }
 
 const SAMPLING_RATE = 30;
@@ -194,31 +183,10 @@ export default function HeartRateMonitor() {
             setCurrentBPM(Math.round(smoothed));
 
             const ibis = calculateIBI(dataBufferRef.current, SAMPLING_RATE);
-            const avgIBI =
-              ibis.length > 0
-                ? ibis.reduce((a, b) => a + b, 0) / ibis.length
-                : 0;
-
             const hrv = calculateHRV(ibis);
 
-            const rr = estimateRespirationRate(
-              dataBufferRef.current,
-              SAMPLING_RATE,
-            );
-
-            const pi = calculatePerfusionIndex(dataBufferRef.current);
-
-            const snr = calculateSNR(dataBufferRef.current);
-
-            const sqi = calculateSQI(dataBufferRef.current);
-
             setAdvancedMetrics({
-              ibi: avgIBI,
-              hrv,
-              rr,
-              pi,
-              snr,
-              sqi,
+              rmssd: hrv.rmssd,
             });
 
             if (validReadingsRef.current.length >= 12) {
@@ -375,94 +343,15 @@ export default function HeartRateMonitor() {
                 <PulseWave data={waveform} height={80} />
 
                 {advancedMetrics && (
-                  <ScrollView
-                    style={styles.metricsScroll}
-                    showsVerticalScrollIndicator={false}
-                  >
-                    <View style={styles.metricsGrid}>
-                      <View style={styles.metricCard}>
-                        <Text style={styles.metricLabel}>IBI</Text>
-                        <Text style={styles.metricValue}>
-                          {advancedMetrics.ibi.toFixed(0)}
-                        </Text>
-                        <Text style={styles.metricUnit}>ms</Text>
-                      </View>
-
-                      <View style={styles.metricCard}>
-                        <Text style={styles.metricLabel}>SDNN</Text>
-                        <Text style={styles.metricValue}>
-                          {advancedMetrics.hrv.sdnn.toFixed(1)}
-                        </Text>
-                        <Text style={styles.metricUnit}>ms</Text>
-                      </View>
-
-                      <View style={styles.metricCard}>
-                        <Text style={styles.metricLabel}>RMSSD</Text>
-                        <Text style={styles.metricValue}>
-                          {advancedMetrics.hrv.rmssd.toFixed(1)}
-                        </Text>
-                        <Text style={styles.metricUnit}>ms</Text>
-                      </View>
-
-                      <View style={styles.metricCard}>
-                        <Text style={styles.metricLabel}>pNN50</Text>
-                        <Text style={styles.metricValue}>
-                          {advancedMetrics.hrv.pnn50.toFixed(1)}
-                        </Text>
-                        <Text style={styles.metricUnit}>%</Text>
-                      </View>
-
-                      <View style={styles.metricCard}>
-                        <Text style={styles.metricLabel}>NN50</Text>
-                        <Text style={styles.metricValue}>
-                          {advancedMetrics.hrv.nn50.toFixed(0)}
-                        </Text>
-                        <Text style={styles.metricUnit}>count</Text>
-                      </View>
-
-                      <View style={styles.metricCard}>
-                        <Text style={styles.metricLabel}>LF/HF</Text>
-                        <Text style={styles.metricValue}>
-                          {advancedMetrics.hrv.lfHfRatio.toFixed(2)}
-                        </Text>
-                        <Text style={styles.metricUnit}>ratio</Text>
-                      </View>
-
-                      <View style={styles.metricCard}>
-                        <Text style={styles.metricLabel}>RR</Text>
-                        <Text style={styles.metricValue}>
-                          {advancedMetrics.rr > 0
-                            ? advancedMetrics.rr.toFixed(1)
-                            : "--"}
-                        </Text>
-                        <Text style={styles.metricUnit}>br/min</Text>
-                      </View>
-
-                      <View style={styles.metricCard}>
-                        <Text style={styles.metricLabel}>PI</Text>
-                        <Text style={styles.metricValue}>
-                          {advancedMetrics.pi.toFixed(2)}
-                        </Text>
-                        <Text style={styles.metricUnit}>%</Text>
-                      </View>
-
-                      <View style={styles.metricCard}>
-                        <Text style={styles.metricLabel}>SNR</Text>
-                        <Text style={styles.metricValue}>
-                          {advancedMetrics.snr.toFixed(1)}
-                        </Text>
-                        <Text style={styles.metricUnit}>dB</Text>
-                      </View>
-
-                      <View style={styles.metricCard}>
-                        <Text style={styles.metricLabel}>SQI</Text>
-                        <Text style={styles.metricValue}>
-                          {advancedMetrics.sqi.toFixed(0)}
-                        </Text>
-                        <Text style={styles.metricUnit}>%</Text>
-                      </View>
+                  <View style={styles.metricsGrid}>
+                    <View style={styles.metricCard}>
+                      <Text style={styles.metricLabel}>HRV-RMSSD</Text>
+                      <Text style={styles.metricValue}>
+                        {advancedMetrics.rmssd.toFixed(1)}
+                      </Text>
+                      <Text style={styles.metricUnit}>ms</Text>
                     </View>
-                  </ScrollView>
+                  </View>
                 )}
 
                 <View style={styles.progressContainer}>
@@ -570,7 +459,7 @@ const styles = StyleSheet.create({
 
   card: {
     backgroundColor: "rgba(40, 8, 14, 0.95)",
-    padding: 32,
+    padding: 20,
     borderRadius: 30,
     alignItems: "center",
     width: "90%",
@@ -682,12 +571,12 @@ const styles = StyleSheet.create({
     width: "100%",
   },
   heartIconContainer: {
-    marginBottom: 24,
+    marginBottom: 12,
   },
   heartGradient: {
-    width: 100,
-    height: 100,
-    borderRadius: 50,
+    width: 80,
+    height: 80,
+    borderRadius: 40,
     justifyContent: "center",
     alignItems: "center",
     shadowColor: "#e94560",
@@ -698,13 +587,13 @@ const styles = StyleSheet.create({
   },
   bpmContainer: {
     alignItems: "center",
-    marginBottom: 16,
+    marginBottom: 8,
   },
   bpmText: {
     color: "#fff",
-    fontSize: 72,
+    fontSize: 58,
     fontWeight: "800",
-    lineHeight: 80,
+    lineHeight: 64,
     letterSpacing: -2,
   },
   bpmLabel: {
@@ -721,7 +610,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: 16,
     paddingVertical: 8,
     borderRadius: 20,
-    marginBottom: 24,
+    marginBottom: 12,
     borderWidth: 1,
     borderColor: "rgba(233, 69, 96, 0.3)",
   },
@@ -760,17 +649,10 @@ const styles = StyleSheet.create({
     fontWeight: "600",
   },
 
-  metricsScroll: {
-    maxHeight: 200,
-    width: "100%",
-    marginBottom: 16,
-  },
   metricsGrid: {
     flexDirection: "row",
-    flexWrap: "wrap",
-    gap: 8,
     justifyContent: "center",
-    paddingVertical: 8,
+    marginBottom: 8,
   },
   metricCard: {
     backgroundColor: "rgba(233, 69, 96, 0.1)",
@@ -801,7 +683,7 @@ const styles = StyleSheet.create({
   },
 
   cancelBtn: {
-    marginTop: 24,
+    marginTop: 14,
     paddingHorizontal: 24,
     paddingVertical: 12,
     borderRadius: 20,
