@@ -184,7 +184,7 @@ export const fetchMeasurements = async () => {
     .select("*")
     .eq("userId", userId)
     .order("created_at", { ascending: false })
-    .limit(100);
+    .limit(200);
 
   if (error) {
     console.error("Error fetching measurements:", error);
