@@ -184,7 +184,7 @@ export const fetchMeasurements = async () => {
     .select("*")
     .eq("userId", userId)
     .order("created_at", { ascending: false })
-    .limit(200);
+    .limit(300);
 
   if (error) {
     console.error("Error fetching measurements:", error);
@@ -329,4 +329,38 @@ export const deleteMeasurement = async (measurementId: number) => {
   }
 
   return { data, error };
+};
+
+export type MeasurementDeleteRange = {
+  start: Date;
+  end: Date;
+};
+
+export const deleteMeasurements = async (range?: MeasurementDeleteRange) => {
+  const userId = await getUserId();
+  if (!userId) {
+    console.error("Cannot delete measurements: User not authenticated");
+    return { error: { message: "Not authenticated" } };
+  }
+
+  try {
+    let query = supabase.from("Measurement").delete().eq("userId", userId);
+
+    if (range) {
+      query = query
+        .gte("created_at", range.start.toISOString())
+        .lte("created_at", range.end.toISOString());
+    }
+
+    const { error } = await query;
+    if (error) {
+      console.error("Error deleting measurements:", error);
+      return { error };
+    }
+
+    return { error: null };
+  } catch (error: any) {
+    console.error("Exception deleting measurements:", error);
+    return { error: { message: error?.message ?? "Unknown error" } };
+  }
 };

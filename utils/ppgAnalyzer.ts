@@ -4,7 +4,6 @@ import {
   calculateIBI,
   calculatePerfusionIndex,
   calculateSNR,
-  estimateHeartRateAutocorrelation,
   estimateHeartRateEnsemble,
   type HeartRateEstimate,
   type HRVMetrics,
@@ -47,6 +46,9 @@ export interface MeasurementStatus {
   message: string;
   canStop: boolean;
   shouldStop: boolean;
+  // HRV readiness
+  ibiCount: number;
+  hrvReady: boolean;
 }
 
 export interface FinalResult {
@@ -65,6 +67,13 @@ export interface FinalResult {
   recommendation?: string;
 }
 
+// Minimum successive IBI differences before RMSSD is considered valid.
+// Below this threshold the 95% CI on RMSSD is too wide to be clinically meaningful.
+const MIN_IBI_FOR_HRV = 20;
+
+// Maximum IBIs retained in the session buffer (≈ 5 min @ 60 BPM)
+const MAX_IBI_BUFFER = 500;
+
 export class ThermalAwarePPGAnalyzer {
   private config: MeasurementConfig;
   private thermalCompensator: AdaptiveThermalCompensator;
@@ -76,6 +85,11 @@ export class ThermalAwarePPGAnalyzer {
   private status: MeasurementStatus;
   private peakTemperature: number = 0;
   private lastGoodResult: PPGAnalysisResult | null = null;
+
+  // Session-wide IBI accumulator — fixed: was recomputed from scratch on each
+  // analyzeCurrentBuffer() call with only the current buffer. Now IBIs are
+  // accumulated across the full measurement so RMSSD stabilises over time.
+  private ibiAccumulator: number[] = [];
 
   constructor(config: Partial<MeasurementConfig> = {}) {
     this.config = {
@@ -94,7 +108,11 @@ export class ThermalAwarePPGAnalyzer {
     this.scheduler = new ThermalAwareMeasurementScheduler();
     this.flashMonitor = new FlashIntensityMonitor();
 
-    this.status = {
+    this.status = this.idleStatus();
+  }
+
+  private idleStatus(): MeasurementStatus {
+    return {
       phase: "idle",
       progress: 0,
       heartRate: 0,
@@ -104,12 +122,13 @@ export class ThermalAwarePPGAnalyzer {
       message: "Ready to start",
       canStop: false,
       shouldStop: false,
+      ibiCount: 0,
+      hrvReady: false,
     };
   }
 
   canStart(): { ready: boolean; message: string; cooldownRemaining?: number } {
     const cooldownCheck = this.scheduler.canStartMeasurement();
-
     if (!cooldownCheck.canStart) {
       return {
         ready: false,
@@ -117,27 +136,18 @@ export class ThermalAwarePPGAnalyzer {
         cooldownRemaining: cooldownCheck.cooldownRemaining,
       };
     }
-
     if (this.status.phase === "measuring") {
-      return {
-        ready: false,
-        message: "Measurement already in progress",
-      };
+      return { ready: false, message: "Measurement already in progress" };
     }
-
-    return {
-      ready: true,
-      message: "Ready to start measurement",
-    };
+    return { ready: true, message: "Ready to start measurement" };
   }
 
   start(): boolean {
     const check = this.canStart();
-    if (!check.ready) {
-      return false;
-    }
+    if (!check.ready) return false;
 
     this.buffer = [];
+    this.ibiAccumulator = [];
     this.startTime = Date.now();
     this.peakTemperature = 0;
     this.lastGoodResult = null;
@@ -154,6 +164,8 @@ export class ThermalAwarePPGAnalyzer {
       thermalState: null,
       canStop: false,
       shouldStop: false,
+      ibiCount: 0,
+      hrvReady: false,
     };
 
     return true;
@@ -194,7 +206,6 @@ export class ThermalAwarePPGAnalyzer {
         );
       }
 
-      // Store good results
       if (
         result.confidence >= this.config.minConfidence &&
         result.signalQuality >= this.config.minQualityThreshold
@@ -208,6 +219,10 @@ export class ThermalAwarePPGAnalyzer {
           signalQuality: result.signalQuality,
           perfusionIndex: result.perfusionIndex,
           snr: result.snr,
+          hrv:
+            this.ibiAccumulator.length >= MIN_IBI_FOR_HRV
+              ? calculateHRV(this.ibiAccumulator)
+              : undefined,
         };
       }
 
@@ -234,6 +249,8 @@ export class ThermalAwarePPGAnalyzer {
         message: result.adaptiveRecommendation,
         canStop,
         shouldStop,
+        ibiCount: this.ibiAccumulator.length,
+        hrvReady: this.ibiAccumulator.length >= MIN_IBI_FOR_HRV,
       };
     } else {
       const remaining = this.config.minDuration - bufferSeconds;
@@ -242,6 +259,8 @@ export class ThermalAwarePPGAnalyzer {
         phase: "measuring",
         progress: 20 + (bufferSeconds / this.config.minDuration) * 30,
         message: `Measuring... ${Math.ceil(remaining)}s minimum`,
+        ibiCount: this.ibiAccumulator.length,
+        hrvReady: this.ibiAccumulator.length >= MIN_IBI_FOR_HRV,
       };
     }
 
@@ -249,7 +268,6 @@ export class ThermalAwarePPGAnalyzer {
   }
 
   private analyzeCurrentBuffer(): ThermalAwarePPGResult {
-    // Apply thermal compensation if enabled
     let processedSignal = this.buffer;
     let thermalState: ThermalState | null = null;
 
@@ -259,15 +277,12 @@ export class ThermalAwarePPGAnalyzer {
       thermalState = result.thermalState;
     }
 
-    // Analyze signal
     const analysis = this.analyzePPGSignal(
       processedSignal,
       this.config.samplingRate,
     );
 
     const elapsedSeconds = (Date.now() - this.startTime) / 1000;
-
-    // Generate recommendations
     const shouldPause = this.shouldPauseMeasurement(
       elapsedSeconds,
       thermalState,
@@ -305,34 +320,30 @@ export class ThermalAwarePPGAnalyzer {
       };
     }
 
-    let heartRate: HeartRateEstimate;
-    if (this.config.enableEnsembleMethod) {
-      heartRate = estimateHeartRateEnsemble(signal, fs);
-    } else {
-      const bpm = estimateHeartRateAutocorrelation(signal, fs);
-      heartRate = {
-        bpm,
-        confidence: bpm > 0 ? 0.7 : 0,
-        method: "autocorrelation",
-      };
-    }
+    // Ensemble HR (FFT + autocorrelation + peaks) — unchanged, already good
+    const heartRate = this.config.enableEnsembleMethod
+      ? estimateHeartRateEnsemble(signal, fs)
+      : { bpm: 0, confidence: 0, method: "ensemble_disabled" };
 
-    // Calculate HRV if enough data
-    let hrv: HRVMetrics | undefined;
-    if (signal.length >= fs * 15) {
-      const ibis = calculateIBI(signal, fs);
-      if (ibis.length >= 10) {
-        hrv = calculateHRV(ibis);
+    // IBI accumulation — fixed: append new IBIs to the session buffer rather
+    // than recomputing HRV from scratch on a fixed short window each call.
+    // calculateIBI now uses parabolic interpolation + 350 ms min distance.
+    if (signal.length >= fs * 5) {
+      const newIbis = calculateIBI(signal.slice(-fs * 15), fs);
+      if (newIbis.length > 0) {
+        this.ibiAccumulator = [...this.ibiAccumulator, ...newIbis].slice(
+          -MAX_IBI_BUFFER,
+        );
       }
     }
 
-    return {
-      heartRate,
-      signalQuality,
-      perfusionIndex,
-      snr,
-      hrv,
-    };
+    // Compute HRV only when the session buffer has enough differences
+    let hrv: HRVMetrics | undefined;
+    if (this.ibiAccumulator.length >= MIN_IBI_FOR_HRV) {
+      hrv = calculateHRV(this.ibiAccumulator);
+    }
+
+    return { heartRate, signalQuality, perfusionIndex, snr, hrv };
   }
 
   private shouldPauseMeasurement(
@@ -351,39 +362,25 @@ export class ThermalAwarePPGAnalyzer {
     confidence: number,
     quality: number,
   ): string {
-    if (thermal && thermal.estimatedTemperature > 4.5) {
+    if (thermal && thermal.estimatedTemperature > 4.5)
       return "🔥 Camera very hot - pause to cool down";
-    }
-
-    if (thermal && Math.abs(thermal.driftRate) > 3.0) {
+    if (thermal && Math.abs(thermal.driftRate) > 3.0)
       return "⚠️ Excessive thermal drift - pause to reset";
-    }
-
     if (elapsedTime < this.config.minDuration) {
-      if (quality < 50) {
-        return "📍 Adjust finger position for better signal";
-      }
+      if (quality < 50) return "📍 Adjust finger position for better signal";
       return `⏱️ Measuring... ${Math.ceil(this.config.minDuration - elapsedTime)}s remaining`;
     }
-
     if (
       elapsedTime >= this.config.minDuration &&
       elapsedTime <= this.config.maxDuration * 0.75
     ) {
-      if (confidence > 0.7 && quality > 60) {
+      if (confidence > 0.7 && quality > 60)
         return "✅ Good measurement - you can stop now";
-      }
       return "📊 Continue measuring for better accuracy";
     }
-
-    if (thermal && thermal.estimatedTemperature > 3.0) {
+    if (thermal && thermal.estimatedTemperature > 3.0)
       return "🌡️ Camera warming - complete measurement soon";
-    }
-
-    if (quality < 30) {
-      return "❌ Poor signal quality - check finger placement";
-    }
-
+    if (quality < 30) return "❌ Poor signal quality - check finger placement";
     return "📊 Measuring...";
   }
 
@@ -393,7 +390,14 @@ export class ThermalAwarePPGAnalyzer {
     let finalResult: PPGAnalysisResult;
 
     if (this.lastGoodResult) {
-      finalResult = this.lastGoodResult;
+      // Use best saved result, but attach the latest (and most complete) HRV
+      finalResult = {
+        ...this.lastGoodResult,
+        hrv:
+          this.ibiAccumulator.length >= MIN_IBI_FOR_HRV
+            ? calculateHRV(this.ibiAccumulator)
+            : undefined,
+      };
     } else if (this.buffer.length >= this.config.samplingRate * 5) {
       const analysis = this.analyzeCurrentBuffer();
       finalResult = {
@@ -405,6 +409,10 @@ export class ThermalAwarePPGAnalyzer {
         signalQuality: analysis.signalQuality,
         perfusionIndex: analysis.perfusionIndex,
         snr: analysis.snr,
+        hrv:
+          this.ibiAccumulator.length >= MIN_IBI_FOR_HRV
+            ? calculateHRV(this.ibiAccumulator)
+            : undefined,
       };
     } else {
       this.status = {
@@ -412,7 +420,6 @@ export class ThermalAwarePPGAnalyzer {
         phase: "error",
         message: "Insufficient data collected",
       };
-
       return {
         success: false,
         heartRate: 0,
@@ -443,6 +450,11 @@ export class ThermalAwarePPGAnalyzer {
     } else if (this.peakTemperature > 3.5) {
       warning = "Camera heated during measurement";
       recommendation = "Wait 60s before next measurement for best accuracy";
+    }
+
+    if (finalResult.hrv === undefined) {
+      const hrvWarning = `HRV not computed — only ${this.ibiAccumulator.length} beats collected (need ${MIN_IBI_FOR_HRV})`;
+      warning = warning ? `${warning}. ${hrvWarning}` : hrvWarning;
     }
 
     this.status = {
@@ -477,23 +489,13 @@ export class ThermalAwarePPGAnalyzer {
 
   reset() {
     this.buffer = [];
+    this.ibiAccumulator = [];
     this.startTime = 0;
     this.peakTemperature = 0;
     this.lastGoodResult = null;
     this.thermalCompensator.reset();
     this.flashMonitor.reset();
-
-    this.status = {
-      phase: "idle",
-      progress: 0,
-      message: "Ready to start",
-      heartRate: 0,
-      confidence: 0,
-      signalQuality: 0,
-      thermalState: null,
-      canStop: false,
-      shouldStop: false,
-    };
+    this.status = this.idleStatus();
   }
 
   getStatus(): MeasurementStatus {

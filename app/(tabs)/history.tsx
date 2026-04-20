@@ -1,5 +1,9 @@
 import { useAuth } from "@/context/AuthContext";
-import { deleteMeasurement, fetchMeasurements } from "@/lib/supabaseQueries";
+import {
+  deleteMeasurement,
+  deleteMeasurements,
+  fetchMeasurements,
+} from "@/lib/supabaseQueries";
 import Ionicons from "@expo/vector-icons/Ionicons";
 import MaterialIcons from "@expo/vector-icons/MaterialIcons";
 import { useFocusEffect } from "@react-navigation/native";
@@ -30,8 +34,18 @@ interface HistoryItem {
 }
 
 const MONTH_NAMES = [
-  "January", "February", "March", "April", "May", "June",
-  "July", "August", "September", "October", "November", "December",
+  "January",
+  "February",
+  "March",
+  "April",
+  "May",
+  "June",
+  "July",
+  "August",
+  "September",
+  "October",
+  "November",
+  "December",
 ];
 const DAY_HEADERS = ["Su", "Mo", "Tu", "We", "Th", "Fr", "Sa"];
 
@@ -50,7 +64,10 @@ export default function History() {
   const [calendarMonth, setCalendarMonth] = useState(() => new Date());
   const [rangeStart, setRangeStart] = useState<Date | null>(null);
   const [rangeEnd, setRangeEnd] = useState<Date | null>(null);
-  const [activeRange, setActiveRange] = useState<{ start: Date; end: Date } | null>(null);
+  const [activeRange, setActiveRange] = useState<{
+    start: Date;
+    end: Date;
+  } | null>(null);
 
   // ── Derived filtered list ───────────────────────────────────────────────────
   const filteredHistory = useMemo(() => {
@@ -92,7 +109,11 @@ export default function History() {
       setRangeStart(activeRange.start);
       setRangeEnd(activeRange.end);
       setCalendarMonth(
-        new Date(activeRange.start.getFullYear(), activeRange.start.getMonth(), 1),
+        new Date(
+          activeRange.start.getFullYear(),
+          activeRange.start.getMonth(),
+          1,
+        ),
       );
     } else {
       setCalendarMonth(new Date());
@@ -138,10 +159,7 @@ export default function History() {
           const isEnd = !!rangeEnd && isSameDay(day, rangeEnd);
           const isSelected = isStart || isEnd;
           const isInRange =
-            !!rangeStart &&
-            !!rangeEnd &&
-            day > rangeStart &&
-            day < rangeEnd;
+            !!rangeStart && !!rangeEnd && day > rangeStart && day < rangeEnd;
 
           return (
             <TouchableOpacity
@@ -151,7 +169,10 @@ export default function History() {
               activeOpacity={0.7}
             >
               <View
-                style={[calStyles.dayInner, isSelected && calStyles.dayInnerSelected]}
+                style={[
+                  calStyles.dayInner,
+                  isSelected && calStyles.dayInnerSelected,
+                ]}
               >
                 <Text
                   style={[
@@ -171,7 +192,11 @@ export default function History() {
   };
 
   const formatRangeLabel = (d: Date) =>
-    d.toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });
+    d.toLocaleDateString("en-US", {
+      month: "short",
+      day: "numeric",
+      year: "numeric",
+    });
 
   // ── Export helpers ──────────────────────────────────────────────────────────
   const escapeCsvValue = (value: string) => {
@@ -234,7 +259,10 @@ export default function History() {
   const exportAsPdf = async () => {
     try {
       const Print = await import("expo-print");
-      if (!Print?.printToFileAsync || typeof Print.printToFileAsync !== "function") {
+      if (
+        !Print?.printToFileAsync ||
+        typeof Print.printToFileAsync !== "function"
+      ) {
         Alert.alert(
           "PDF Export Unavailable",
           "Install expo-print:\n\nnpx expo install expo-print",
@@ -271,7 +299,10 @@ export default function History() {
 
   const handleExport = async () => {
     if (Platform.OS === "web") {
-      Alert.alert("Not supported", "Exporting is only available on iOS/Android.");
+      Alert.alert(
+        "Not supported",
+        "Exporting is only available on iOS/Android.",
+      );
       return;
     }
     if (filteredHistory.length === 0) {
@@ -320,8 +351,14 @@ export default function History() {
     }
   };
 
-  useEffect(() => { loadHistory(); }, []);
-  useFocusEffect(useCallback(() => { loadHistory(); }, []));
+  useEffect(() => {
+    loadHistory();
+  }, []);
+  useFocusEffect(
+    useCallback(() => {
+      loadHistory();
+    }, []),
+  );
 
   const handleDelete = async (id: number) => {
     Alert.alert(
@@ -345,14 +382,57 @@ export default function History() {
     );
   };
 
+  const handleDeleteAll = () => {
+    if (filteredHistory.length === 0) {
+      Alert.alert("Nothing to delete", "No readings to delete.");
+      return;
+    }
+
+    const title = activeRange
+      ? "Delete filtered history"
+      : "Delete all history";
+    const message = activeRange
+      ? `Delete ${filteredHistory.length} reading${filteredHistory.length !== 1 ? "s" : ""} in the selected date range?`
+      : `Delete all ${filteredHistory.length} reading${filteredHistory.length !== 1 ? "s" : ""}?`;
+
+    Alert.alert(title, message, [
+      { text: "Cancel", style: "cancel" },
+      {
+        text: "Delete",
+        style: "destructive",
+        onPress: async () => {
+          const range = activeRange
+            ? (() => {
+                const start = new Date(activeRange.start);
+                start.setHours(0, 0, 0, 0);
+                const end = new Date(activeRange.end);
+                end.setHours(23, 59, 59, 999);
+                return { start, end };
+              })()
+            : undefined;
+
+          const { error } = await deleteMeasurements(range);
+          if (error) {
+            Alert.alert("Error", "Failed to delete records.");
+          } else {
+            loadHistory();
+          }
+        },
+      },
+    ]);
+  };
+
   const formatDate = (dateString: string) =>
     new Date(dateString).toLocaleDateString("en-US", {
-      year: "numeric", month: "2-digit", day: "2-digit",
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
     });
 
   const formatTime = (dateString: string) =>
     new Date(dateString).toLocaleTimeString("en-US", {
-      hour: "2-digit", minute: "2-digit",
+      hour: "2-digit",
+      minute: "2-digit",
     });
 
   const footerHeight = 80 + (insets.bottom || 12);
@@ -360,7 +440,12 @@ export default function History() {
   // ── Loading state ───────────────────────────────────────────────────────────
   if (isLoading) {
     return (
-      <View style={[styles.container, { justifyContent: "center", alignItems: "center" }]}>
+      <View
+        style={[
+          styles.container,
+          { justifyContent: "center", alignItems: "center" },
+        ]}
+      >
         <ActivityIndicator size="large" color="#748cab" />
         <Text style={styles.loadingText}>Loading history...</Text>
       </View>
@@ -395,28 +480,50 @@ export default function History() {
                   : ` – ${formatRangeLabel(activeRange.end)}`}
               </Text>
               <Text style={styles.filterCount}>
-                · {filteredHistory.length} reading{filteredHistory.length !== 1 ? "s" : ""}
+                · {filteredHistory.length} reading
+                {filteredHistory.length !== 1 ? "s" : ""}
               </Text>
-              <TouchableOpacity onPress={clearRange} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
+              <TouchableOpacity
+                onPress={clearRange}
+                hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+              >
                 <Ionicons name="close-circle" size={16} color="#f0ebd8" />
               </TouchableOpacity>
             </View>
           ) : (
             <Text style={styles.subtitle}>
-              {history.length} {history.length === 1 ? "reading" : "readings"} recorded
+              {history.length} {history.length === 1 ? "reading" : "readings"}{" "}
+              recorded
             </Text>
           )}
 
           <View style={styles.headerActions}>
-            <TouchableOpacity style={styles.actionButton} onPress={openCalendar}>
+            <TouchableOpacity
+              style={styles.actionButton}
+              onPress={openCalendar}
+            >
               <Ionicons name="calendar-outline" size={16} color="#f0ebd8" />
               <Text style={styles.actionButtonText}>
                 {activeRange ? "Change range" : "Filter by date"}
               </Text>
             </TouchableOpacity>
-            <TouchableOpacity style={styles.actionButton} onPress={handleExport}>
+            <TouchableOpacity
+              style={styles.actionButton}
+              onPress={handleExport}
+            >
               <MaterialIcons name="file-download" size={16} color="#f0ebd8" />
               <Text style={styles.actionButtonText}>Export</Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={[
+                styles.actionButton,
+                filteredHistory.length === 0 && { opacity: 0.5 },
+              ]}
+              onPress={handleDeleteAll}
+              disabled={filteredHistory.length === 0}
+            >
+              <MaterialIcons name="delete-sweep" size={16} color="#f0ebd8" />
+              <Text style={styles.actionButtonText}>Delete all</Text>
             </TouchableOpacity>
           </View>
         </LinearGradient>
@@ -444,8 +551,12 @@ export default function History() {
               >
                 <View style={styles.historyCard}>
                   <View style={styles.cardLeft}>
-                    <Text style={styles.cardDate}>{formatDate(item.created_at)}</Text>
-                    <Text style={styles.cardTime}>{formatTime(item.created_at)}</Text>
+                    <Text style={styles.cardDate}>
+                      {formatDate(item.created_at)}
+                    </Text>
+                    <Text style={styles.cardTime}>
+                      {formatTime(item.created_at)}
+                    </Text>
                   </View>
                   <LinearGradient
                     colors={["#3e5c76", "#748cab"]}
@@ -490,7 +601,8 @@ export default function History() {
             </TouchableOpacity>
 
             <Text style={calStyles.monthTitle}>
-              {MONTH_NAMES[calendarMonth.getMonth()]} {calendarMonth.getFullYear()}
+              {MONTH_NAMES[calendarMonth.getMonth()]}{" "}
+              {calendarMonth.getFullYear()}
             </Text>
 
             <TouchableOpacity
@@ -532,7 +644,10 @@ export default function History() {
               <Text style={calStyles.clearBtnText}>Clear filter</Text>
             </TouchableOpacity>
             <TouchableOpacity
-              style={[calStyles.applyBtn, !rangeStart && calStyles.applyBtnDisabled]}
+              style={[
+                calStyles.applyBtn,
+                !rangeStart && calStyles.applyBtnDisabled,
+              ]}
               onPress={applyRange}
               disabled={!rangeStart}
             >
@@ -630,7 +745,12 @@ const styles = StyleSheet.create({
     elevation: 2,
   },
   cardLeft: { flex: 1 },
-  cardDate: { fontSize: 16, fontWeight: "600", color: "#f0ebd8", marginBottom: 4 },
+  cardDate: {
+    fontSize: 16,
+    fontWeight: "600",
+    color: "#f0ebd8",
+    marginBottom: 4,
+  },
   cardTime: { fontSize: 14, color: "#748cab" },
   bpmBadge: {
     paddingHorizontal: 20,
@@ -641,7 +761,11 @@ const styles = StyleSheet.create({
   },
   bpmValue: { fontSize: 24, fontWeight: "bold", color: "#f0ebd8" },
   bpmLabel: { fontSize: 12, color: "#f0ebd8", marginTop: 2 },
-  swipeActions: { justifyContent: "center", alignItems: "center", marginBottom: 20 },
+  swipeActions: {
+    justifyContent: "center",
+    alignItems: "center",
+    marginBottom: 20,
+  },
   swipeDeleteAction: {
     width: 96,
     height: "100%",
@@ -652,10 +776,31 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: "#28080eff",
   },
-  swipeDeleteText: { marginTop: 2, fontSize: 12, fontWeight: "600", color: "#f0ebd8" },
-  emptyState: { flex: 1, alignItems: "center", justifyContent: "center", paddingVertical: 60 },
-  emptyTitle: { fontSize: 20, fontWeight: "bold", color: "#f0ebd8", marginBottom: 8, marginTop: 12 },
-  emptySubtitle: { fontSize: 14, color: "#748cab", textAlign: "center", paddingHorizontal: 40 },
+  swipeDeleteText: {
+    marginTop: 2,
+    fontSize: 12,
+    fontWeight: "600",
+    color: "#f0ebd8",
+  },
+  emptyState: {
+    flex: 1,
+    alignItems: "center",
+    justifyContent: "center",
+    paddingVertical: 60,
+  },
+  emptyTitle: {
+    fontSize: 20,
+    fontWeight: "bold",
+    color: "#f0ebd8",
+    marginBottom: 8,
+    marginTop: 12,
+  },
+  emptySubtitle: {
+    fontSize: 14,
+    color: "#748cab",
+    textAlign: "center",
+    paddingHorizontal: 40,
+  },
   loadingText: { fontSize: 16, color: "#748cab", marginTop: 16 },
 });
 
