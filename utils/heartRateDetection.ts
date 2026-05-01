@@ -512,16 +512,12 @@ export function calculateIBI(signal: number[], fs: number): number[] {
 }
 
 export interface HRVMetrics {
-  sdnn: number;
   rmssd: number;
-  pnn50: number;
-  nn50: number;
-  lfHfRatio: number;
 }
 
 /**
- * Compute RMSSD and other HRV metrics from an array of inter-beat intervals (ms).
- * Requires at least 20 intervals for a meaningful RMSSD — caller should gate on this.
+ * Compute RMSSD from an array of inter-beat intervals (ms).
+ * Caller should gate on enough intervals (e.g. 20+) for stability.
  */
 export function calculateHRV(ibis: number[]): HRVMetrics {
   const medianIBI = median(ibis);
@@ -530,103 +526,17 @@ export function calculateHRV(ibis: number[]): HRVMetrics {
     (t) => Math.abs(t - medianIBI) < 0.2 * medianIBI,
   );
 
-  if (validIBIs.length < 5) {
-    return { sdnn: 0, rmssd: 0, pnn50: 0, nn50: 0, lfHfRatio: 0 };
+  if (validIBIs.length < 3) {
+    return { rmssd: 0 };
   }
 
-  const mean = validIBIs.reduce((a, b) => a + b, 0) / validIBIs.length;
-  const variance =
-    validIBIs.reduce((a, b) => a + Math.pow(b - mean, 2), 0) /
-    (validIBIs.length - 1);
-  const sdnn = Math.sqrt(variance);
-
   let sumSqDiff = 0;
-  let nn50Count = 0;
   for (let i = 1; i < validIBIs.length; i++) {
     const diff = validIBIs[i] - validIBIs[i - 1];
     sumSqDiff += diff * diff;
-    if (Math.abs(diff) > 50) nn50Count++;
   }
   const rmssd = Math.sqrt(sumSqDiff / (validIBIs.length - 1));
-  const pnn50 = (nn50Count / (validIBIs.length - 1)) * 100;
-
-  const lfHfRatio = computeLfHfRatioFromIBI(validIBIs);
-
-  return { sdnn, rmssd, pnn50, nn50: nn50Count, lfHfRatio };
-}
-
-// ============================================================================
-// LF/HF RATIO — FIXED: now uses the existing FFT instead of O(n²) DFT
-// ============================================================================
-
-function interpolateIBI(
-  ibisMs: number[],
-  sampleRateHz = 4,
-  nSamples = 256,
-): number[] {
-  if (ibisMs.length < 2) return [];
-
-  const times: number[] = [0];
-  for (let i = 0; i < ibisMs.length; i++)
-    times.push(times[i] + ibisMs[i] / 1000);
-  times.pop();
-
-  const totalTime = times[times.length - 1];
-  if (totalTime <= 0) return [];
-
-  const step = 1 / sampleRateHz;
-  const resampled: number[] = [];
-  let idx = 0;
-
-  for (let t = 0; t < totalTime && resampled.length < nSamples; t += step) {
-    while (idx < times.length - 1 && times[idx + 1] < t) idx++;
-    const t1 = times[idx];
-    const t2 = times[idx + 1] ?? t1 + step;
-    const v1 = ibisMs[idx];
-    const v2 = ibisMs[idx + 1] ?? v1;
-    const frac = t2 !== t1 ? (t - t1) / (t2 - t1) : 0;
-    resampled.push(v1 + (v2 - v1) * frac);
-  }
-
-  return resampled;
-}
-
-function hannWindow(n: number): number[] {
-  const w = new Array(n);
-  for (let i = 0; i < n; i++)
-    w[i] = 0.5 * (1 - Math.cos((2 * Math.PI * i) / (n - 1)));
-  return w;
-}
-
-/**
- * LF/HF power ratio from IBI series.
- * Fixed: uses the FFT already implemented in this module instead of the original
- * O(n²) manual DFT loop (was 32k–65k operations per call on A10).
- */
-function computeLfHfRatioFromIBI(ibisMs: number[]): number {
-  const fs = 4;
-  const series = interpolateIBI(ibisMs, fs);
-  if (series.length < 64) return 0;
-
-  const n = series.length;
-  const mean = series.reduce((a, b) => a + b, 0) / n;
-  const winWeights = hannWindow(n);
-  const windowed = series.map((v, i) => (v - mean) * winWeights[i]);
-
-  // O(n log n) FFT — same function used everywhere else in this module
-  const fftResult = fft(windowed);
-  const freqRes = fs / fftResult.length;
-
-  let lf = 0,
-    hf = 0;
-  for (let k = 1; k < Math.floor(fftResult.length / 2); k++) {
-    const power = getMagnitude(fftResult[k]) ** 2 / n;
-    const freq = k * freqRes;
-    if (freq >= 0.04 && freq < 0.15) lf += power;
-    if (freq >= 0.15 && freq < 0.4) hf += power;
-  }
-
-  return hf > 0 ? lf / hf : 0;
+  return { rmssd };
 }
 
 // ============================================================================

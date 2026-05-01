@@ -149,10 +149,6 @@ export const AuthProvider = ({ children }: any) => {
         };
       }
 
-      if (data.user?.id && data.user?.email) {
-        await createUserProfile(data.user.id, data.user.email, name);
-      }
-
       const successMsg = data.session
         ? "Registration successful!"
         : "Registration successful! Please check your email to verify your account.";
@@ -184,6 +180,10 @@ export const AuthProvider = ({ children }: any) => {
         authenticated: true,
         user: data.user,
       });
+
+      if (data.user?.id && data.user?.email) {
+        await createUserProfile(data.user.id, data.user.email, data.user.user_metadata?.display_name);
+      }
 
       return { error: false, msg: "Login successful!", data };
     } catch (error: any) {

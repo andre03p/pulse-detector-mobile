@@ -181,7 +181,7 @@ export const fetchMeasurements = async () => {
 
   const { data, error } = await supabase
     .from("Measurement")
-    .select("*")
+    .select("id, created_at, heartRate, hrvRmssd, timeStamp, userId")
     .eq("userId", userId)
     .order("created_at", { ascending: false })
     .limit(300);
@@ -190,10 +190,22 @@ export const fetchMeasurements = async () => {
     console.error("Error fetching measurements:", error);
   }
 
-  return { data, error };
+  return { data: (data as MeasurementRow[] | null) ?? null, error };
 };
 
-export const addMeasurement = async (heartRate: number) => {
+export type MeasurementRow = {
+  id: number;
+  created_at: string;
+  heartRate: number;
+  hrvRmssd?: number | null;
+  timeStamp: string;
+  userId: number;
+};
+
+export const addMeasurement = async (
+  heartRate: number,
+  hrvRmssd: number | null = null,
+) => {
   const userId = await getUserId();
   if (!userId) {
     console.error("Cannot add measurement: User not authenticated");
@@ -205,17 +217,21 @@ export const addMeasurement = async (heartRate: number) => {
   console.log("Saving measurement:", {
     userId: userId,
     heartRate,
+    hrvRmssd,
     timestamp,
   });
 
+  const payload = {
+    userId: userId,
+    heartRate: heartRate,
+    hrvRmssd,
+    timeStamp: timestamp,
+    created_at: timestamp,
+  };
+
   const { data, error } = await supabase
     .from("Measurement")
-    .insert({
-      userId: userId,
-      heartRate: heartRate,
-      timeStamp: timestamp,
-      created_at: timestamp,
-    })
+    .insert(payload)
     .select();
 
   if (error) {

@@ -29,6 +29,7 @@ interface HistoryItem {
   id: number;
   created_at: string;
   heartRate: number;
+  hrvRmssd?: number | null;
   timeStamp: string;
   userId: number;
 }
@@ -208,7 +209,8 @@ export default function History() {
 
   const shareFile = async (uri: string) => {
     try {
-      const Sharing = await import("expo-sharing");
+      const SharingModule = await import("expo-sharing");
+      const Sharing = (SharingModule as any)?.default ?? SharingModule;
       if (
         Sharing?.isAvailableAsync &&
         typeof Sharing.isAvailableAsync === "function"
@@ -236,29 +238,43 @@ export default function History() {
 
   const exportAsCsv = async () => {
     try {
-      const { File, Paths } = await import("expo-file-system");
-      const header = ["id", "created_at", "heartRate"].join(",");
+      const FileSystemModule = await import("expo-file-system");
+      const FileSystem = (FileSystemModule as any)?.default ?? FileSystemModule;
+      const File = (FileSystem as any)?.File ?? (FileSystemModule as any)?.File;
+      const Paths =
+        (FileSystem as any)?.Paths ?? (FileSystemModule as any)?.Paths;
+      if (!File || !Paths?.document) {
+        throw new Error("expo-file-system File/Paths API not available");
+      }
+
+      const header = ["id", "created_at", "heartRate", "hrvRmssd"].join(",");
       const rows = filteredHistory.map((h) =>
         [
           String(h.id),
           escapeCsvValue(new Date(h.created_at).toISOString()),
           String(h.heartRate),
+          h.hrvRmssd !== null && h.hrvRmssd !== undefined
+            ? String(Math.round(h.hrvRmssd))
+            : "",
         ].join(","),
       );
       const fileName = `pulse_history_${Date.now()}.csv`;
       const file = new File(Paths.document, fileName);
-      await file.write([header, ...rows].join("\n"));
+      file.write([header, ...rows].join("\n"), { encoding: "utf8" });
       await shareFile(file.uri);
       Alert.alert("Success", "CSV file exported successfully");
     } catch (error) {
       console.error("Export CSV error:", error);
-      Alert.alert("Export failed", "Could not export data as CSV");
+      const message =
+        error instanceof Error ? error.message : "Could not export data as CSV";
+      Alert.alert("Export failed", message);
     }
   };
 
   const exportAsPdf = async () => {
     try {
-      const Print = await import("expo-print");
+      const PrintModule = await import("expo-print");
+      const Print = (PrintModule as any)?.default ?? PrintModule;
       if (
         !Print?.printToFileAsync ||
         typeof Print.printToFileAsync !== "function"
@@ -273,7 +289,11 @@ export default function History() {
       const rowsHtml = filteredHistory
         .map((h) => {
           const date = new Date(h.created_at);
-          return `<tr><td>${date.toLocaleString()}</td><td style="text-align:right;">${h.heartRate}</td></tr>`;
+          const rmssd =
+            h.hrvRmssd !== null && h.hrvRmssd !== undefined
+              ? Math.round(h.hrvRmssd)
+              : "";
+          return `<tr><td>${date.toLocaleString()}</td><td style="text-align:right;">${h.heartRate}</td><td style="text-align:right;">${rmssd}</td></tr>`;
         })
         .join("");
       const html = `<!DOCTYPE html><html><head><meta charset="utf-8"/>
@@ -286,14 +306,16 @@ export default function History() {
         </style></head><body>
         <h1>Heart Rate History</h1>
         <p>Exported on ${new Date().toLocaleString()} · ${filteredHistory.length} readings</p>
-        <table><thead><tr><th>Date/Time</th><th style="text-align:right;">BPM</th></tr></thead>
+        <table><thead><tr><th>Date/Time</th><th style="text-align:right;">BPM</th><th style="text-align:right;">RMSSD (ms)</th></tr></thead>
         <tbody>${rowsHtml}</tbody></table></body></html>`;
       const { uri } = await Print.printToFileAsync({ html, base64: false });
       await shareFile(uri);
       Alert.alert("Success", "PDF file exported successfully");
     } catch (error) {
       console.error("Export PDF error:", error);
-      Alert.alert("Export failed", "Could not export data as PDF.");
+      const message =
+        error instanceof Error ? error.message : "Could not export data as PDF";
+      Alert.alert("Export failed", message);
     }
   };
 
@@ -557,6 +579,11 @@ export default function History() {
                     <Text style={styles.cardTime}>
                       {formatTime(item.created_at)}
                     </Text>
+                    {item.hrvRmssd !== null && item.hrvRmssd !== undefined && (
+                      <Text style={styles.cardRmssd}>
+                        RMSSD: {Math.round(item.hrvRmssd)} ms
+                      </Text>
+                    )}
                   </View>
                   <LinearGradient
                     colors={["#3e5c76", "#748cab"]}
@@ -752,6 +779,12 @@ const styles = StyleSheet.create({
     marginBottom: 4,
   },
   cardTime: { fontSize: 14, color: "#748cab" },
+  cardRmssd: {
+    fontSize: 13,
+    color: "#b8c5d6",
+    marginTop: 6,
+    fontWeight: "600",
+  },
   bpmBadge: {
     paddingHorizontal: 20,
     paddingVertical: 12,
