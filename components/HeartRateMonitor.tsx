@@ -70,6 +70,10 @@ const MIN_VALID_READINGS = 12;
 // Below this the confidence interval on RMSSD is too wide to be useful.
 const MIN_IBI_COUNT_FOR_HRV = 20;
 
+// Safety stop: if we can't reach MIN_IBI_COUNT_FOR_HRV (poor signal / low HR),
+// don't keep the user stuck measuring forever.
+const MAX_MEASUREMENT_DURATION_MS = 45_000;
+
 // Maximum accumulated IBIs kept in memory (≈300 s @ 60 BPM)
 const MAX_IBI_BUFFER = 300;
 
@@ -100,6 +104,8 @@ export default function HeartRateMonitor() {
   // This is what gives valid RMSSD: we need 20+ differences, meaning
   // 20+ successive beats, which takes ≥ 20 s at 60 BPM.
   const allIBIsRef = useRef<number[]>([]);
+
+  const measurementStartMsRef = useRef<number | null>(null);
 
   const detectionPhaseRef = useRef<"waiting" | "measuring">("waiting");
   const validReadingsRef = useRef<number[]>([]);
@@ -152,6 +158,7 @@ export default function HeartRateMonitor() {
       if (avgRed > FINGER_DETECTED_THRESHOLD) {
         setFingerDetected(true);
         detectionPhaseRef.current = "measuring";
+        measurementStartMsRef.current = now;
         dataBufferRef.current = [];
         validReadingsRef.current = [];
         allIBIsRef.current = [];
@@ -170,6 +177,7 @@ export default function HeartRateMonitor() {
     if (avgRed < FINGER_LOST_THRESHOLD) {
       setFingerDetected(false);
       detectionPhaseRef.current = "waiting";
+      measurementStartMsRef.current = null;
       setProgress(0);
       return;
     }
@@ -272,7 +280,19 @@ export default function HeartRateMonitor() {
             }
           }
 
-          if (validReadingsRef.current.length >= MIN_VALID_READINGS) {
+          const hasEnoughBpm =
+            validReadingsRef.current.length >= MIN_VALID_READINGS;
+          const hasEnoughIbi =
+            allIBIsRef.current.length >= MIN_IBI_COUNT_FOR_HRV;
+          const elapsedMs =
+            measurementStartMsRef.current !== null
+              ? now - measurementStartMsRef.current
+              : 0;
+          const timedOut = elapsedMs >= MAX_MEASUREMENT_DURATION_MS;
+
+          // We only finalise once we have stable BPM estimates and (ideally)
+          // enough IBIs to compute a meaningful RMSSD.
+          if (hasEnoughBpm && (hasEnoughIbi || timedOut)) {
             finalizeMeasurement(Math.round(smoothed));
           }
         }
@@ -324,6 +344,7 @@ export default function HeartRateMonitor() {
     dataBufferRef.current = [];
     validReadingsRef.current = [];
     allIBIsRef.current = [];
+    measurementStartMsRef.current = null;
     rollingMeanRef.current = 0;
     rollingM2Ref.current = 0;
     rollingCountRef.current = 0;
@@ -339,21 +360,32 @@ export default function HeartRateMonitor() {
     setIsMonitoring(false);
     setFingerDetected(false);
     detectionPhaseRef.current = "waiting";
+    measurementStartMsRef.current = null;
     setProgress(0);
   }, []);
 
   const finalizeMeasurement = async (finalBPM: number) => {
     stopMonitoring();
     setIsSaving(true);
-    const { error } = await addMeasurement(finalBPM);
+    let rmssdToSave: number | null = null;
+    if (allIBIsRef.current.length >= MIN_IBI_COUNT_FOR_HRV) {
+      const { rmssd } = calculateHRV(allIBIsRef.current);
+      if (Number.isFinite(rmssd) && rmssd > 0) {
+        rmssdToSave = rmssd;
+      }
+    }
+    const { error } = await addMeasurement(finalBPM, rmssdToSave);
     setIsSaving(false);
     if (error) {
       Alert.alert(
         "Recorded",
-        `${finalBPM} BPM (Save Failed: ${error.message})`,
+        `${finalBPM} BPM${rmssdToSave !== null ? `\nRMSSD: ${Math.round(rmssdToSave)} ms` : ""} (Save Failed: ${error.message})`,
       );
     } else {
-      Alert.alert("Success", `${finalBPM} BPM`);
+      Alert.alert(
+        "Success",
+        `${finalBPM} BPM${rmssdToSave !== null ? `\nRMSSD: ${Math.round(rmssdToSave)} ms` : ""}`,
+      );
     }
   };
 

@@ -15,6 +15,7 @@ export interface Database {
           id: number;
           created_at: string;
           heartRate: number;
+          hrvRmssd: number | null;
           timeStamp: string;
           userId: number;
         };

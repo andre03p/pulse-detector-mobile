@@ -149,7 +149,7 @@ export default function Login() {
           </View>
 
           <View style={styles.footer}>
-            <Text style={styles.footerText}>Don't have an account? </Text>
+            <Text style={styles.footerText}>Don{"'"}t have an account? </Text>
             <Link href="/(auth)/register" asChild>
               <TouchableOpacity disabled={loading}>
                 <Text style={styles.linkText}>Sign Up</Text>

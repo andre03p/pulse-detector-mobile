@@ -227,7 +227,7 @@ export default function VerifyEmail() {
           <View style={styles.infoBox}>
             <Text style={styles.infoText}>
               <Entypo name="light-bulb" size={16} color="white" />
-              Tip: Check your spam folder if you don't see the email
+              Tip: Check your spam folder if you don{"'"}t see the email
             </Text>
           </View>
         </ScrollView>
