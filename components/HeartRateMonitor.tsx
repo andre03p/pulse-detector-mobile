@@ -6,6 +6,8 @@ import {
   calculateHRV,
   calculateIBI,
   estimateHeartRateEnsemble,
+  getThermalCooldownNotice,
+  getThermalWarning,
   weightedMedian,
 } from "@/utils/heartRateDetection";
 import Entypo from "@expo/vector-icons/Entypo";
@@ -60,8 +62,9 @@ const FINGER_LOST_THRESHOLD = 40;
 const MIN_VALID_BPM = 30;
 const MAX_VALID_BPM = 200;
 
-// Advanced SQI threshold (0–100 scale). 40 allows slightly noisy but usable signals.
-const MIN_QUALITY_SCORE = 40;
+// Advanced SQI threshold (0–100 scale). 25 compensates for removing the kurtosis
+// metric (which acted as a hidden floor in the old 5-metric formula).
+const MIN_QUALITY_SCORE = 25;
 
 // How many BPM estimates before we finalise
 const MIN_VALID_READINGS = 12;
@@ -88,6 +91,9 @@ export default function HeartRateMonitor() {
   const [waveform, setWaveform] = useState<number[]>([]);
   const [advancedMetrics, setAdvancedMetrics] =
     useState<AdvancedMetrics | null>(null);
+  const [thermalWarning, setThermalWarning] = useState<string | null>(null);
+  const [cooldownNotice, setCooldownNotice] = useState<string | null>(null);
+  const lastMeasurementEndRef = useRef<number | null>(null);
 
   const pulseAnim = useRef(new Animated.Value(1)).current;
   const fadeAnim = useRef(new Animated.Value(0)).current;
@@ -214,6 +220,11 @@ export default function HeartRateMonitor() {
     if (now - lastWaveUpdateRef.current > 120) {
       lastWaveUpdateRef.current = now;
       setWaveform(dataBufferRef.current.slice(-120));
+      const elapsed =
+        measurementStartMsRef.current !== null
+          ? now - measurementStartMsRef.current
+          : 0;
+      setThermalWarning(getThermalWarning(elapsed));
     }
 
     const currentProgress = Math.min(
@@ -352,16 +363,26 @@ export default function HeartRateMonitor() {
     setAdvancedMetrics(null);
     setWaveform([]);
     setFingerDetected(false);
+    setCooldownNotice(null);
     detectionPhaseRef.current = "waiting";
     setIsMonitoring(true);
   }, [hasPermission, requestPermission]);
 
   const stopMonitoring = useCallback(() => {
+    const elapsed =
+      measurementStartMsRef.current !== null
+        ? Date.now() - measurementStartMsRef.current
+        : 0;
     setIsMonitoring(false);
     setFingerDetected(false);
     detectionPhaseRef.current = "waiting";
     measurementStartMsRef.current = null;
     setProgress(0);
+    setThermalWarning(null);
+    if (elapsed > 20_000) {
+      lastMeasurementEndRef.current = Date.now();
+      setCooldownNotice(getThermalCooldownNotice(0));
+    }
   }, []);
 
   const finalizeMeasurement = async (finalBPM: number) => {
@@ -513,6 +534,10 @@ export default function HeartRateMonitor() {
                     {Math.round(progress * 100)}%
                   </Text>
                 </View>
+
+                {thermalWarning && (
+                  <Text style={styles.thermalWarning}>{thermalWarning}</Text>
+                )}
               </View>
             )}
 
@@ -538,6 +563,10 @@ export default function HeartRateMonitor() {
                 Measure your pulse in 15 seconds
               </Text>
             </View>
+
+            {cooldownNotice && (
+              <Text style={styles.cooldownNotice}>{cooldownNotice}</Text>
+            )}
 
             <TouchableOpacity onPress={startMonitoring} activeOpacity={0.8}>
               <LinearGradient
@@ -774,6 +803,19 @@ const styles = StyleSheet.create({
     fontSize: 9,
     fontWeight: "500",
     marginTop: 1,
+  },
+
+  thermalWarning: {
+    color: "#ff8c00",
+    fontSize: 12,
+    textAlign: "center",
+    marginTop: 6,
+  },
+  cooldownNotice: {
+    color: "#ff8c00",
+    fontSize: 13,
+    textAlign: "center",
+    marginBottom: 16,
   },
 
   cancelBtn: {
