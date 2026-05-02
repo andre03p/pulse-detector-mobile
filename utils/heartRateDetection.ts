@@ -1,5 +1,5 @@
 // ============================================================================
-// BUTTERWORTH FILTER — 4th order cascade of two 2nd-order sections
+// BUTTERWORTH FILTER — 2nd order single section
 // ============================================================================
 
 class SecondOrderSection {
@@ -283,75 +283,6 @@ export function estimateHeartRateAutocorrelation(
   return bpm >= 40 && bpm <= 220 ? bpm : 0;
 }
 
-/**
- * Adaptive peak detection with IQR-based threshold.
- * Returns integer sample indices.
- */
-export function detectPeaksAdaptive(signal: number[], fs: number): number[] {
-  if (signal.length < 10) return [];
-
-  // Moving-average baseline removal (200 ms window)
-  const windowSize = Math.floor(fs * 0.2);
-  const detrended: number[] = new Array(signal.length);
-  for (let i = 0; i < signal.length; i++) {
-    const start = Math.max(0, i - Math.floor(windowSize / 2));
-    const end = Math.min(signal.length, i + Math.floor(windowSize / 2) + 1);
-    let sum = 0;
-    for (let j = start; j < end; j++) sum += signal[j];
-    detrended[i] = signal[i] - sum / (end - start);
-  }
-
-  // Smoothing (50 ms window)
-  const smoothWindow = Math.max(3, Math.floor(fs * 0.05));
-  const smoothed: number[] = new Array(detrended.length);
-  for (let i = 0; i < detrended.length; i++) {
-    const start = Math.max(0, i - smoothWindow);
-    const end = Math.min(detrended.length, i + smoothWindow + 1);
-    let sum = 0;
-    for (let j = start; j < end; j++) sum += detrended[j];
-    smoothed[i] = sum / (end - start);
-  }
-
-  // IQR-based adaptive threshold
-  const sorted = [...smoothed].sort((a, b) => a - b);
-  const p75 = sorted[Math.floor(sorted.length * 0.75)];
-  const p25 = sorted[Math.floor(sorted.length * 0.25)];
-  const threshold = p25 + (p75 - p25) * 0.5;
-
-  // 250 ms minimum for HR estimation (used for BPM only — see calculateIBI for HRV)
-  const minDistance = Math.floor(fs * 0.25);
-  const peaks: number[] = [];
-
-  for (let i = 1; i < smoothed.length - 1; i++) {
-    if (
-      smoothed[i] > smoothed[i - 1] &&
-      smoothed[i] > smoothed[i + 1] &&
-      smoothed[i] > threshold
-    ) {
-      if (peaks.length === 0 || i - peaks[peaks.length - 1] >= minDistance) {
-        peaks.push(i);
-      } else if (smoothed[i] > smoothed[peaks[peaks.length - 1]]) {
-        peaks[peaks.length - 1] = i;
-      }
-    }
-  }
-
-  return peaks;
-}
-
-export function estimateHeartRatePeaks(signal: number[], fs: number): number {
-  const peaks = detectPeaksAdaptive(signal, fs);
-  if (peaks.length < 2) return 0;
-
-  const intervals: number[] = [];
-  for (let i = 1; i < peaks.length; i++) {
-    const bpm = 60 / ((peaks[i] - peaks[i - 1]) / fs);
-    if (bpm >= 40 && bpm <= 220) intervals.push(bpm);
-  }
-
-  return intervals.length === 0 ? 0 : median(intervals);
-}
-
 // ============================================================================
 // ENSEMBLE HR ESTIMATION
 // ============================================================================
@@ -371,14 +302,11 @@ export function estimateHeartRateEnsemble(
 
   const fftBpm = estimateHeartRateFFT(signal, fs);
   const autocorrBpm = estimateHeartRateAutocorrelation(signal, fs);
-  const peakBpm = estimateHeartRatePeaks(signal, fs);
 
   const estimates: { bpm: number; method: string; weight: number }[] = [];
   if (fftBpm > 0) estimates.push({ bpm: fftBpm, method: "fft", weight: 1.5 });
   if (autocorrBpm > 0)
     estimates.push({ bpm: autocorrBpm, method: "autocorr", weight: 1.2 });
-  if (peakBpm > 0)
-    estimates.push({ bpm: peakBpm, method: "peaks", weight: 1.0 });
 
   if (estimates.length === 0)
     return { bpm: 0, confidence: 0, method: "no_valid_estimate" };
@@ -413,29 +341,22 @@ export function estimateHeartRateEnsemble(
       method: "ensemble_low",
     };
 
-  // Weighted average when methods disagree strongly
-  const totalWeight = estimates.reduce((s, e) => s + e.weight, 0);
-  const weightedBpm =
-    estimates.reduce((s, e) => s + e.bpm * e.weight, 0) / totalWeight;
-  return {
-    bpm: Math.round(weightedBpm),
-    confidence: 0.4,
-    method: "ensemble_uncertain",
-  };
+  // Methods disagree strongly — abstain rather than average two potentially wrong values.
+  // With only two estimators there is no tiebreaker, so a confident wrong answer is
+  // worse than no answer.
+  return { bpm: 0, confidence: 0, method: "ensemble_uncertain" };
 }
 
 // ============================================================================
-// IBI + HRV — FIXED
+// IBI + HRV
 // ============================================================================
 
 /**
  * Compute inter-beat intervals from a PPG signal.
- *
- * Changes from original:
- * 1. Uses the same detrend + smooth pipeline as detectPeaksAdaptive for consistency.
- * 2. Minimum peak distance raised to 350 ms (was 250 ms) to suppress dicrotic notches.
- * 3. Parabolic sub-sample interpolation applied to every detected peak via refinePeak(),
- *    reducing timing error from ±33 ms to ±2 ms at 30 fps.
+ * Uses moving-average baseline removal + smoothing + IQR adaptive threshold.
+ * Minimum peak distance is 350 ms to suppress dicrotic notches.
+ * Parabolic sub-sample interpolation via refinePeak() reduces timing error
+ * from ±33 ms to ±2 ms at 30 fps.
  */
 export function calculateIBI(signal: number[], fs: number): number[] {
   if (signal.length < fs * 2) return [];
@@ -451,7 +372,7 @@ export function calculateIBI(signal: number[], fs: number): number[] {
     detrended[i] = signal[i] - sum / (end - start);
   }
 
-  // Step 2 — smoothing (50 ms window) — same signal used for refinePeak
+  // Step 2 — smoothing (50 ms window)
   const smoothWindow = Math.max(3, Math.floor(fs * 0.05));
   const smoothed: number[] = new Array(detrended.length);
   for (let i = 0; i < detrended.length; i++) {
@@ -469,7 +390,7 @@ export function calculateIBI(signal: number[], fs: number): number[] {
   const threshold = p25 + (p75 - p25) * 0.5;
 
   // Step 4 — peak detection with 350 ms minimum distance
-  // 350 ms ≈ 171 BPM max, safely above any dicrotic notch timing (~250–350 ms post-systole)
+  // 350 ms ≈ 171 BPM max, safely above any dicrotic notch timing
   const minDistance = Math.floor(fs * 0.35);
   const rawPeaks: number[] = [];
 
@@ -485,7 +406,6 @@ export function calculateIBI(signal: number[], fs: number): number[] {
       ) {
         rawPeaks.push(i);
       } else if (smoothed[i] > smoothed[rawPeaks[rawPeaks.length - 1]]) {
-        // Keep the higher of two close peaks
         rawPeaks[rawPeaks.length - 1] = i;
       }
     }
@@ -493,9 +413,7 @@ export function calculateIBI(signal: number[], fs: number): number[] {
 
   if (rawPeaks.length < 2) return [];
 
-  // Step 5 — parabolic sub-sample refinement on the smoothed signal.
-  // This is the critical step: converts integer (±33 ms) peak indices into
-  // fractional (±2 ms) indices before converting to milliseconds.
+  // Step 5 — parabolic sub-sample refinement
   const refinedPeaks = rawPeaks.map((idx) => refinePeak(smoothed, idx));
 
   // Step 6 — compute IBIs from refined fractional indices
@@ -543,42 +461,9 @@ export function calculateHRV(ibis: number[]): HRVMetrics {
 // SIGNAL QUALITY
 // ============================================================================
 
-export function calculateKurtosis(data: number[]): number {
-  const n = data.length;
-  if (n < 4) return 0;
-  const mean = data.reduce((a, b) => a + b, 0) / n;
-  let m2 = 0,
-    m4 = 0;
-  for (let i = 0; i < n; i++) {
-    const diff = data[i] - mean;
-    const diff2 = diff * diff;
-    m2 += diff2;
-    m4 += diff2 * diff2;
-  }
-  const variance = m2 / n;
-  if (variance < 1e-10) return 0;
-  return m4 / n / (variance * variance);
-}
-
-export function calculateSkewness(data: number[]): number {
-  const n = data.length;
-  if (n < 3) return 0;
-  const mean = data.reduce((a, b) => a + b, 0) / n;
-  let m2 = 0,
-    m3 = 0;
-  for (const x of data) {
-    const d = x - mean;
-    m2 += d * d;
-    m3 += d * d * d;
-  }
-  const stdDev = Math.sqrt(m2 / n);
-  if (stdDev < 1e-10) return 0;
-  return m3 / n / (stdDev * stdDev * stdDev);
-}
-
 /**
- * Advanced Signal Quality Index — 5 weighted metrics, returns 0–100.
- * Use this everywhere instead of the legacy assessSignalQuality().
+ * Signal Quality Index — 3 weighted metrics, returns 0–100.
+ * Metrics: spectral purity (0.5), SNR (0.3), amplitude stability (0.2).
  */
 export function calculateAdvancedSQI(signal: number[], fs: number): number {
   if (signal.length < 30) return 0;
@@ -598,14 +483,8 @@ export function calculateAdvancedSQI(signal: number[], fs: number): number {
   const spectralPurity = totalPower > 0 ? maxPower / totalPower : 0;
   const spectralScore = Math.min(spectralPurity / 0.4, 1);
 
-  const kurtosis = calculateKurtosis(signal);
-  const kurtosisScore = Math.exp(-Math.abs(kurtosis - 3) / 3);
-
   const snr = calculateSNR(signal);
   const snrScore = Math.min(Math.max((snr - 5) / 20, 0), 1);
-
-  const pi = calculatePerfusionIndex(signal);
-  const piScore = Math.min(Math.max(pi / 10, 0), 1);
 
   const mean = signal.reduce((a, b) => a + b, 0) / signal.length;
   const variance =
@@ -614,49 +493,9 @@ export function calculateAdvancedSQI(signal: number[], fs: number): number {
   const stabilityScore =
     cv > 0.01 && cv < 0.5 ? 1 : Math.exp(-Math.abs(cv - 0.1) / 0.2);
 
-  const weights = [0.3, 0.2, 0.2, 0.15, 0.15];
-  const scores = [
-    spectralScore,
-    kurtosisScore,
-    snrScore,
-    piScore,
-    stabilityScore,
-  ];
+  const weights = [0.5, 0.3, 0.2];
+  const scores = [spectralScore, snrScore, stabilityScore];
   return weights.reduce((sum, w, i) => sum + w * scores[i], 0) * 100;
-}
-
-/**
- * @deprecated Use calculateAdvancedSQI instead.
- * Kept only for backwards compatibility with any callers not yet updated.
- */
-export function assessSignalQuality(data: number[]): number {
-  const n = data.length;
-  if (n < 10) return 0;
-  const mean = data.reduce((a, b) => a + b, 0) / n;
-  let sumSquares = 0,
-    maxVal = -Infinity,
-    minVal = Infinity;
-  for (const v of data) {
-    sumSquares += (v - mean) * (v - mean);
-    if (v > maxVal) maxVal = v;
-    if (v < minVal) minVal = v;
-  }
-  const acComponent = Math.sqrt(sumSquares / n);
-  const snr = Math.abs(mean) > 0 ? acComponent / Math.abs(mean) : 0;
-  const snrScore = snr > 0.001 && snr < 1.0 ? 1 : 0;
-  let m2 = 0,
-    m3 = 0;
-  for (const v of data) {
-    const d = v - mean;
-    m2 += d * d;
-    m3 += d * d * d;
-  }
-  const stdDev = Math.sqrt(m2 / n);
-  const skewness = stdDev > 0 ? m3 / n / (stdDev * stdDev * stdDev) : 0;
-  const skewnessScore = Math.abs(skewness) > 0.2 ? 1 : 0;
-  const ppScore = maxVal - minVal > 1 ? 1 : 0;
-  const total = snrScore + skewnessScore + ppScore;
-  return total >= 1 ? 1 : 0;
 }
 
 // ============================================================================
@@ -682,35 +521,6 @@ export function weightedMedian(values: number[]): number {
   return median(weighted);
 }
 
-export class KalmanFilter {
-  private x = 70;
-  private p = 10;
-  private readonly q = 0.5;
-  private readonly r = 5;
-
-  update(measurement: number): number {
-    this.p = this.p + this.q;
-    const k = this.p / (this.p + this.r);
-    this.x = this.x + k * (measurement - this.x);
-    this.p = (1 - k) * this.p;
-    return this.x;
-  }
-
-  reset() {
-    this.x = 70;
-    this.p = 10;
-  }
-}
-
-export function calculatePerfusionIndex(signal: number[]): number {
-  if (signal.length === 0) return 0;
-  const mean = signal.reduce((a, b) => a + b, 0) / signal.length;
-  const max = Math.max(...signal);
-  const min = Math.min(...signal);
-  const acComponent = (max - min) / 2;
-  return mean > 0 ? (acComponent / mean) * 100 : 0;
-}
-
 export function calculateSNR(signal: number[]): number {
   if (signal.length < 2) return 0;
   const mean = signal.reduce((a, b) => a + b, 0) / signal.length;
@@ -724,37 +534,30 @@ export function calculateSNR(signal: number[]): number {
   return noisePower > 0 ? 10 * Math.log10(signalPower / noisePower) : 0;
 }
 
-export function calculateSQI(signal: number[], fs: number = 30): number {
-  return calculateAdvancedSQI(signal, fs);
+// ============================================================================
+// THERMAL WARNING
+// ============================================================================
+
+/**
+ * Returns a warning shown during an active measurement when the camera flash
+ * has been running long enough to measurably heat the sensor (~17s+).
+ * Uses an exponential heating model (tau=20s, max rise 3.5°C).
+ */
+export function getThermalWarning(elapsedMs: number): string | null {
+  const t = elapsedMs / 1000;
+  const estimatedRise = 3.5 * (1 - Math.exp(-t / 20));
+  if (estimatedRise > 2.0)
+    return "Camera warming up — hold still for best accuracy";
+  return null;
 }
 
-export function estimateRespirationRate(signal: number[], fs: number): number {
-  if (signal.length < 30) return 0;
-  const window = Math.max(3, Math.floor(fs / 2));
-  const smooth: number[] = [];
-  for (let i = 0; i < signal.length; i++) {
-    let sum = 0,
-      count = 0;
-    for (let j = i - window; j <= i + window; j++) {
-      if (j >= 0 && j < signal.length) {
-        sum += signal[j];
-        count++;
-      }
-    }
-    smooth.push(sum / count);
-  }
-  const mean = smooth.reduce((a, b) => a + b, 0) / smooth.length;
-  const envNorm = smooth.map((x) => x - mean);
-  let zeroCrossings = 0;
-  for (let i = 1; i < envNorm.length; i++) {
-    if (
-      (envNorm[i - 1] > 0 && envNorm[i] <= 0) ||
-      (envNorm[i - 1] < 0 && envNorm[i] >= 0)
-    ) {
-      zeroCrossings++;
-    }
-  }
-  const durationMin = signal.length / fs / 60;
-  const rr = zeroCrossings / 2 / durationMin;
-  return rr >= 6 && rr <= 40 ? rr : 0;
+/**
+ * Returns a cooldown notice shown on the start screen after a long measurement.
+ * elapsedSinceEndMs: milliseconds since the last measurement ended.
+ */
+export function getThermalCooldownNotice(
+  elapsedSinceEndMs: number,
+): string | null {
+  if (elapsedSinceEndMs >= 45_000) return null;
+  return "Camera may still be warm — wait a moment for best accuracy";
 }
