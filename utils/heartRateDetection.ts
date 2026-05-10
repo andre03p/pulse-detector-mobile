@@ -45,25 +45,18 @@ class SecondOrderSection {
 }
 
 export class ButterworthFilter {
-  private sos: SecondOrderSection[] = [];
+  private sos: SecondOrderSection;
 
   constructor(fs: number, lowCutoff: number = 0.667, highCutoff: number = 4.0) {
-    this.sos = [
-      new SecondOrderSection(fs, lowCutoff, highCutoff),
-      new SecondOrderSection(fs, lowCutoff, highCutoff),
-    ];
+    this.sos = new SecondOrderSection(fs, lowCutoff, highCutoff);
   }
 
   process(input: number): number {
-    let output = input;
-    for (const section of this.sos) {
-      output = section.process(output);
-    }
-    return output;
+    return this.sos.process(input);
   }
 
   reset() {
-    this.sos.forEach((s) => s.reset());
+    this.sos.reset();
   }
 }
 
@@ -176,17 +169,7 @@ export function estimateHeartRateFFT(signal: number[], fs: number): number {
     (maxIdx - minIdx + 1);
   if (maxPower < avgPower * 2) return 0;
 
-  // Parabolic interpolation for sub-bin frequency accuracy
-  let refinedIdx = peakIdx;
-  if (peakIdx > 0 && peakIdx < powerSpectrum.length - 1) {
-    const y1 = powerSpectrum[peakIdx - 1];
-    const y2 = powerSpectrum[peakIdx];
-    const y3 = powerSpectrum[peakIdx + 1];
-    const denom = y1 - 2 * y2 + y3;
-    if (Math.abs(denom) > 1e-10) {
-      refinedIdx = peakIdx + (0.5 * (y1 - y3)) / denom;
-    }
-  }
+  const refinedIdx = refinePeak(powerSpectrum, peakIdx);
 
   const freqHz = refinedIdx * freqResolution;
   const bpm = freqHz * 60;
@@ -227,12 +210,10 @@ export function estimateHeartRateAutocorrelation(
 ): number {
   if (signal.length < 30) return 0;
 
-  const n = signal.length;
   const detrended = detrendSignal(signal);
-  const mean = detrended.reduce((a, b) => a + b, 0) / n;
-  const centered = detrended.map((x) => x - mean);
+  const n = detrended.length;
 
-  const variance = centered.reduce((sum, x) => sum + x * x, 0);
+  const variance = detrended.reduce((sum, x) => sum + x * x, 0);
   if (variance < 1e-10) return 0;
 
   const minLag = Math.floor(fs * (60 / 220));
@@ -241,7 +222,7 @@ export function estimateHeartRateAutocorrelation(
   const autocorr: number[] = [];
   for (let lag = minLag; lag <= maxLag; lag++) {
     let sum = 0;
-    for (let i = 0; i < n - lag; i++) sum += centered[i] * centered[i + lag];
+    for (let i = 0; i < n - lag; i++) sum += detrended[i] * detrended[i + lag];
     autocorr.push(sum / variance);
   }
 
@@ -256,19 +237,7 @@ export function estimateHeartRateAutocorrelation(
 
   if (maxCorr < 0.3) return 0;
 
-  const bestLag = minLag + bestLagOffset;
-
-  // Parabolic interpolation on autocorrelation peak
-  let refinedLag = bestLag;
-  if (bestLagOffset > 0 && bestLagOffset < autocorr.length - 1) {
-    const y1 = autocorr[bestLagOffset - 1];
-    const y2 = autocorr[bestLagOffset];
-    const y3 = autocorr[bestLagOffset + 1];
-    const denom = y1 - 2 * y2 + y3;
-    if (Math.abs(denom) > 1e-10) {
-      refinedLag = bestLag + (0.5 * (y1 - y3)) / denom;
-    }
-  }
+  let refinedLag = minLag + refinePeak(autocorr, bestLagOffset);
 
   // Harmonic check for autocorrelation
   const halfLag = Math.round(refinedLag / 2);
