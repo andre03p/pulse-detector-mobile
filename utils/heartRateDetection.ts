@@ -442,30 +442,3 @@ export function calculateSNR(signal: number[]): number {
   return noisePower > 0 ? 10 * Math.log10(signalPower / noisePower) : 0;
 }
 
-// ============================================================================
-// THERMAL WARNING
-// ============================================================================
-
-/**
- * Returns a warning shown during an active measurement when the camera flash
- * has been running long enough to measurably heat the sensor (~17s+).
- * Uses an exponential heating model (tau=20s, max rise 3.5°C).
- */
-export function getThermalWarning(elapsedMs: number): string | null {
-  const t = elapsedMs / 1000;
-  const estimatedRise = 3.5 * (1 - Math.exp(-t / 20));
-  if (estimatedRise > 2.0)
-    return "Camera warming up — hold still for best accuracy";
-  return null;
-}
-
-/**
- * Returns a cooldown notice shown on the start screen after a long measurement.
- * elapsedSinceEndMs: milliseconds since the last measurement ended.
- */
-export function getThermalCooldownNotice(
-  elapsedSinceEndMs: number,
-): string | null {
-  if (elapsedSinceEndMs >= 45_000) return null;
-  return "Camera may still be warm — wait a moment for best accuracy";
-}

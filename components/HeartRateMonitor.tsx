@@ -6,8 +6,6 @@ import {
   calculateHRV,
   calculateIBI,
   estimateHeartRateEnsemble,
-  getThermalCooldownNotice,
-  getThermalWarning,
   weightedMedian,
 } from "@/utils/heartRateDetection";
 import Entypo from "@expo/vector-icons/Entypo";
@@ -91,9 +89,6 @@ export default function HeartRateMonitor() {
   const [waveform, setWaveform] = useState<number[]>([]);
   const [advancedMetrics, setAdvancedMetrics] =
     useState<AdvancedMetrics | null>(null);
-  const [thermalWarning, setThermalWarning] = useState<string | null>(null);
-  const [cooldownNotice, setCooldownNotice] = useState<string | null>(null);
-  const lastMeasurementEndRef = useRef<number | null>(null);
 
   const pulseAnim = useRef(new Animated.Value(1)).current;
   const fadeAnim = useRef(new Animated.Value(0)).current;
@@ -224,7 +219,6 @@ export default function HeartRateMonitor() {
         measurementStartMsRef.current !== null
           ? now - measurementStartMsRef.current
           : 0;
-      setThermalWarning(getThermalWarning(elapsed));
     }
 
     const currentProgress = Math.min(
@@ -351,6 +345,7 @@ export default function HeartRateMonitor() {
       const granted = await requestPermission();
       if (!granted) return;
     }
+
     filterRef.current.reset();
     dataBufferRef.current = [];
     validReadingsRef.current = [];
@@ -363,26 +358,16 @@ export default function HeartRateMonitor() {
     setAdvancedMetrics(null);
     setWaveform([]);
     setFingerDetected(false);
-    setCooldownNotice(null);
     detectionPhaseRef.current = "waiting";
     setIsMonitoring(true);
   }, [hasPermission, requestPermission]);
 
   const stopMonitoring = useCallback(() => {
-    const elapsed =
-      measurementStartMsRef.current !== null
-        ? Date.now() - measurementStartMsRef.current
-        : 0;
     setIsMonitoring(false);
     setFingerDetected(false);
     detectionPhaseRef.current = "waiting";
     measurementStartMsRef.current = null;
     setProgress(0);
-    setThermalWarning(null);
-    if (elapsed > 20_000) {
-      lastMeasurementEndRef.current = Date.now();
-      setCooldownNotice(getThermalCooldownNotice(0));
-    }
   }, []);
 
   const finalizeMeasurement = async (finalBPM: number) => {
@@ -535,9 +520,6 @@ export default function HeartRateMonitor() {
                   </Text>
                 </View>
 
-                {thermalWarning && (
-                  <Text style={styles.thermalWarning}>{thermalWarning}</Text>
-                )}
               </View>
             )}
 
@@ -564,9 +546,6 @@ export default function HeartRateMonitor() {
               </Text>
             </View>
 
-            {cooldownNotice && (
-              <Text style={styles.cooldownNotice}>{cooldownNotice}</Text>
-            )}
 
             <TouchableOpacity onPress={startMonitoring} activeOpacity={0.8}>
               <LinearGradient
@@ -805,18 +784,6 @@ const styles = StyleSheet.create({
     marginTop: 1,
   },
 
-  thermalWarning: {
-    color: "#ff8c00",
-    fontSize: 12,
-    textAlign: "center",
-    marginTop: 6,
-  },
-  cooldownNotice: {
-    color: "#ff8c00",
-    fontSize: 13,
-    textAlign: "center",
-    marginBottom: 16,
-  },
 
   cancelBtn: {
     marginTop: 14,
