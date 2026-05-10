@@ -2,7 +2,6 @@ import { useAuth } from "@/context/AuthContext";
 import { fetchMeasurements } from "@/lib/supabaseQueries";
 import Entypo from "@expo/vector-icons/Entypo";
 import { useFocusEffect } from "@react-navigation/native";
-import Constants from "expo-constants";
 import { LinearGradient } from "expo-linear-gradient";
 import React, { useCallback, useEffect, useState } from "react";
 import {
@@ -24,13 +23,7 @@ export default function Home() {
   const [totalReadings, setTotalReadings] = useState<number>(0);
   const insets = useSafeAreaInsets();
 
-  // Detect if running in Expo Go or dev client
-  const isExpoGo = Constants.appOwnership === "expo";
-
-  // Dynamically import the appropriate component
-  const HeartRateMonitor = isExpoGo
-    ? require("@/components/HeartRateMonitorPreview").default
-    : require("@/components/HeartRateMonitor").default;
+  const HeartRateMonitor = require("@/components/HeartRateMonitor").default;
 
   const loadLatestMeasurement = async () => {
     try {

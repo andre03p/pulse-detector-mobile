@@ -57,7 +57,6 @@ export default function History() {
   const { authState } = useAuth();
   const [history, setHistory] = useState<HistoryItem[]>([]);
   const [isLoading, setIsLoading] = useState(true);
-  const [refreshing, setRefreshing] = useState(false);
   const insets = useSafeAreaInsets();
 
   // ── Calendar state ──────────────────────────────────────────────────────────
@@ -369,7 +368,6 @@ export default function History() {
       Alert.alert("Error", "Failed to load history. Please try again.");
     } finally {
       setIsLoading(false);
-      setRefreshing(false);
     }
   };
 
