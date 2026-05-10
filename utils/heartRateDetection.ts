@@ -1,62 +1,34 @@
 // ============================================================================
-// BUTTERWORTH FILTER — 2nd order single section
+// BUTTERWORTH FILTER — 2nd order bandpass biquad
 // ============================================================================
 
-class SecondOrderSection {
-  private b: number[] = [];
-  private a: number[] = [];
-  private x: number[] = [0, 0, 0];
-  private y: number[] = [0, 0, 0];
-
-  constructor(fs: number, lowFreq: number, highFreq: number) {
-    this.calculateCoefficients(fs, lowFreq, highFreq);
-  }
-
-  private calculateCoefficients(fs: number, lowFreq: number, highFreq: number) {
-    const w_low = Math.tan((Math.PI * lowFreq) / fs);
-    const w_high = Math.tan((Math.PI * highFreq) / fs);
-    const bw = w_high - w_low;
-    const w0 = Math.sqrt(w_low * w_high);
-    const norm = 1 / (1 + bw + w0 * w0);
-
-    this.b = [bw * norm, 0, -bw * norm];
-    this.a = [1, 2 * (w0 * w0 - 1) * norm, (1 - bw + w0 * w0) * norm];
-  }
-
-  process(input: number): number {
-    this.x[2] = this.x[1];
-    this.x[1] = this.x[0];
-    this.y[2] = this.y[1];
-    this.y[1] = this.y[0];
-    this.x[0] = input;
-    this.y[0] =
-      this.b[0] * this.x[0] +
-      this.b[1] * this.x[1] +
-      this.b[2] * this.x[2] -
-      this.a[1] * this.y[1] -
-      this.a[2] * this.y[2];
-    return this.y[0];
-  }
-
-  reset() {
-    this.x = [0, 0, 0];
-    this.y = [0, 0, 0];
-  }
-}
-
 export class ButterworthFilter {
-  private sos: SecondOrderSection;
+  private b0: number; private b2: number;
+  private a1: number; private a2: number;
+  private x1 = 0; private x2 = 0;
+  private y1 = 0; private y2 = 0;
 
-  constructor(fs: number, lowCutoff: number = 0.667, highCutoff: number = 4.0) {
-    this.sos = new SecondOrderSection(fs, lowCutoff, highCutoff);
+  constructor(fs: number, lowCutoff = 0.667, highCutoff = 4.0) {
+    const wl = Math.tan((Math.PI * lowCutoff) / fs);
+    const wh = Math.tan((Math.PI * highCutoff) / fs);
+    const bw = wh - wl;
+    const w0sq = wl * wh;
+    const norm = 1 / (1 + bw + w0sq);
+    this.b0 = bw * norm;
+    this.b2 = -bw * norm;
+    this.a1 = 2 * (w0sq - 1) * norm;
+    this.a2 = (1 - bw + w0sq) * norm;
   }
 
-  process(input: number): number {
-    return this.sos.process(input);
+  process(x0: number): number {
+    const y0 = this.b0 * x0 + this.b2 * this.x2 - this.a1 * this.y1 - this.a2 * this.y2;
+    this.x2 = this.x1; this.x1 = x0;
+    this.y2 = this.y1; this.y1 = y0;
+    return y0;
   }
 
   reset() {
-    this.sos.reset();
+    this.x1 = this.x2 = this.y1 = this.y2 = 0;
   }
 }
 
@@ -272,47 +244,19 @@ export function estimateHeartRateEnsemble(
   const fftBpm = estimateHeartRateFFT(signal, fs);
   const autocorrBpm = estimateHeartRateAutocorrelation(signal, fs);
 
-  const estimates: { bpm: number; method: string; weight: number }[] = [];
-  if (fftBpm > 0) estimates.push({ bpm: fftBpm, method: "fft", weight: 1.5 });
-  if (autocorrBpm > 0)
-    estimates.push({ bpm: autocorrBpm, method: "autocorr", weight: 1.2 });
-
-  if (estimates.length === 0)
+  if (fftBpm === 0 && autocorrBpm === 0)
     return { bpm: 0, confidence: 0, method: "no_valid_estimate" };
-  if (estimates.length === 1)
-    return {
-      bpm: estimates[0].bpm,
-      confidence: 0.4,
-      method: estimates[0].method,
-    };
+  if (fftBpm === 0) return { bpm: autocorrBpm, confidence: 0.4, method: "autocorr" };
+  if (autocorrBpm === 0) return { bpm: fftBpm, confidence: 0.4, method: "fft" };
 
-  const bpms = estimates.map((e) => e.bpm);
-  const medianBpm = median(bpms);
-  const deviations = bpms.map((b) => Math.abs(b - medianBpm));
-  const mad = median(deviations);
+  const avg = Math.round((fftBpm + autocorrBpm) / 2);
+  const diff = Math.abs(fftBpm - autocorrBpm);
 
-  if (mad < 3)
-    return {
-      bpm: Math.round(medianBpm),
-      confidence: 0.95,
-      method: "ensemble_high",
-    };
-  if (mad < 5)
-    return {
-      bpm: Math.round(medianBpm),
-      confidence: 0.85,
-      method: "ensemble_medium",
-    };
-  if (mad < 10)
-    return {
-      bpm: Math.round(medianBpm),
-      confidence: 0.65,
-      method: "ensemble_low",
-    };
+  if (diff < 6)  return { bpm: avg, confidence: 0.95, method: "ensemble_high" };
+  if (diff < 10) return { bpm: avg, confidence: 0.85, method: "ensemble_medium" };
+  if (diff < 20) return { bpm: avg, confidence: 0.65, method: "ensemble_low" };
 
   // Methods disagree strongly — abstain rather than average two potentially wrong values.
-  // With only two estimators there is no tiebreaker, so a confident wrong answer is
-  // worse than no answer.
   return { bpm: 0, confidence: 0, method: "ensemble_uncertain" };
 }
 
@@ -327,30 +271,25 @@ export function estimateHeartRateEnsemble(
  * Parabolic sub-sample interpolation via refinePeak() reduces timing error
  * from ±33 ms to ±2 ms at 30 fps.
  */
+function movingAverage(signal: number[], halfWin: number): number[] {
+  return signal.map((_, i) => {
+    const start = Math.max(0, i - halfWin);
+    const end = Math.min(signal.length, i + halfWin + 1);
+    let sum = 0;
+    for (let j = start; j < end; j++) sum += signal[j];
+    return sum / (end - start);
+  });
+}
+
 export function calculateIBI(signal: number[], fs: number): number[] {
   if (signal.length < fs * 2) return [];
 
   // Step 1 — moving-average baseline removal (200 ms window)
-  const detrendWindow = Math.floor(fs * 0.2);
-  const detrended: number[] = new Array(signal.length);
-  for (let i = 0; i < signal.length; i++) {
-    const start = Math.max(0, i - Math.floor(detrendWindow / 2));
-    const end = Math.min(signal.length, i + Math.floor(detrendWindow / 2) + 1);
-    let sum = 0;
-    for (let j = start; j < end; j++) sum += signal[j];
-    detrended[i] = signal[i] - sum / (end - start);
-  }
+  const baseline = movingAverage(signal, Math.floor(fs * 0.1));
+  const detrended = signal.map((v, i) => v - baseline[i]);
 
   // Step 2 — smoothing (50 ms window)
-  const smoothWindow = Math.max(3, Math.floor(fs * 0.05));
-  const smoothed: number[] = new Array(detrended.length);
-  for (let i = 0; i < detrended.length; i++) {
-    const start = Math.max(0, i - smoothWindow);
-    const end = Math.min(detrended.length, i + smoothWindow + 1);
-    let sum = 0;
-    for (let j = start; j < end; j++) sum += detrended[j];
-    smoothed[i] = sum / (end - start);
-  }
+  const smoothed = movingAverage(detrended, Math.max(3, Math.floor(fs * 0.05)));
 
   // Step 3 — IQR adaptive threshold
   const sorted = [...smoothed].sort((a, b) => a - b);
