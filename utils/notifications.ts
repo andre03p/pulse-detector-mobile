@@ -133,11 +133,3 @@ export async function cancelAlarmNotification(alarmId: number) {
     }
   }
 }
-
-export async function getAllScheduledNotifications() {
-  return await Notifications.getAllScheduledNotificationsAsync();
-}
-
-export async function cancelAllNotifications() {
-  await Notifications.cancelAllScheduledNotificationsAsync();
-}
