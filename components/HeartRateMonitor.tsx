@@ -3,8 +3,6 @@ import { addMeasurement } from "@/lib/supabaseQueries";
 import {
   ButterworthFilter,
   calculateAdvancedSQI,
-  calculateHRV,
-  calculateIBI,
   estimateHeartRateEnsemble,
   weightedMedian,
 } from "@/utils/heartRateDetection";
@@ -21,8 +19,10 @@ import React, {
 import {
   Alert,
   Animated,
+  Modal,
   StyleSheet,
   Text,
+  TextInput,
   TouchableOpacity,
   View,
 } from "react-native";
@@ -35,12 +35,6 @@ import {
 } from "react-native-vision-camera";
 import { Worklets } from "react-native-worklets-core";
 import { useResizePlugin } from "vision-camera-resize-plugin";
-
-interface AdvancedMetrics {
-  rmssd: number;
-  hrvReady: boolean;
-  ibiCount: number;
-}
 
 type CaptureMode = "standard" | "minute";
 
@@ -58,13 +52,12 @@ const MAX_VALID_BPM = 200;
 const MIN_QUALITY_SCORE = 25;
 
 const MIN_VALID_READINGS = 12;
-const MIN_IBI_COUNT_FOR_HRV = 20;
 
-// Durate de măsurare
-const MAX_MEASUREMENT_DURATION_MS = 45_000; // Pentru modul standard (timeout de siguranță)
-const MINUTE_MEASUREMENT_DURATION_MS = 50_000; // Pentru modul continuu de 1 minut
+// Measurement durations
+const MAX_MEASUREMENT_DURATION_MS = 45_000; // Standard mode (safety timeout)
+const MINUTE_MEASUREMENT_DURATION_MS = 50_000; // Continuous 1-minute mode
 
-const MAX_IBI_BUFFER = 300;
+export const PRESET_TAGS = ["Rest", "Low effort", "High effort"];
 
 // ─── Component ────────────────────────────────────────────────────────────────
 
@@ -75,10 +68,14 @@ export default function HeartRateMonitor() {
   const [fingerDetected, setFingerDetected] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
   const [waveform, setWaveform] = useState<number[]>([]);
-  const [advancedMetrics, setAdvancedMetrics] =
-    useState<AdvancedMetrics | null>(null);
 
   const [mode, setMode] = useState<CaptureMode>("standard");
+
+  const [tagModalVisible, setTagModalVisible] = useState(false);
+  const [pendingBPM, setPendingBPM] = useState<number | null>(null);
+  const [selectedTag, setSelectedTag] = useState<string | null>(null);
+  const [customTag, setCustomTag] = useState("");
+  const [showCustomInput, setShowCustomInput] = useState(false);
 
   const pulseAnim = useRef(new Animated.Value(1)).current;
   const fadeAnim = useRef(new Animated.Value(0)).current;
@@ -90,7 +87,6 @@ export default function HeartRateMonitor() {
 
   const filterRef = useRef(new ButterworthFilter(SAMPLING_RATE));
   const dataBufferRef = useRef<number[]>([]);
-  const allIBIsRef = useRef<number[]>([]);
   const measurementStartMsRef = useRef<number | null>(null);
 
   const modeRef = useRef<CaptureMode>("standard");
@@ -147,7 +143,6 @@ export default function HeartRateMonitor() {
         measurementStartMsRef.current = now;
         dataBufferRef.current = [];
         validReadingsRef.current = [];
-        allIBIsRef.current = [];
         filterRef.current.reset();
         rollingMeanRef.current = 0;
         rollingM2Ref.current = 0;
@@ -199,10 +194,8 @@ export default function HeartRateMonitor() {
 
     let currentProgress = 0;
     if (modeRef.current === "minute") {
-      // Progresul reflectă cele 50 de secunde
       currentProgress = Math.min(elapsedMs / MINUTE_MEASUREMENT_DURATION_MS, 1);
     } else {
-      // Progresul vizual se umple doar pentru mărimea buffer-ului inițial (6s)
       currentProgress = Math.min(dataBufferRef.current.length / WINDOW_SIZE, 1);
     }
     setProgress(currentProgress);
@@ -240,42 +233,17 @@ export default function HeartRateMonitor() {
           const smoothed = weightedMedian(validReadingsRef.current.slice(-7));
           setCurrentBPM(Math.round(smoothed));
 
-          const newIbis = calculateIBI(dataBufferRef.current, SAMPLING_RATE);
-
-          if (newIbis.length > 0) {
-            allIBIsRef.current = [...allIBIsRef.current, ...newIbis].slice(
-              -MAX_IBI_BUFFER,
-            );
-
-            const ibiCount = allIBIsRef.current.length;
-
-            if (ibiCount >= MIN_IBI_COUNT_FOR_HRV) {
-              const hrv = calculateHRV(allIBIsRef.current);
-              setAdvancedMetrics({
-                rmssd: hrv.rmssd,
-                hrvReady: true,
-                ibiCount,
-              });
-            } else {
-              setAdvancedMetrics({ rmssd: 0, hrvReady: false, ibiCount });
-            }
-          }
-
-          // ── Finalizare Măsurătoare ──────────────────────────────────────────
+          // ── Finalize measurement ────────────────────────────────────────────
           const hasEnoughBpm =
             validReadingsRef.current.length >= MIN_VALID_READINGS;
-          const hasEnoughIbi =
-            allIBIsRef.current.length >= MIN_IBI_COUNT_FOR_HRV;
 
           if (modeRef.current === "minute") {
-            // Așteptăm exact 50 de secunde
             if (elapsedMs >= MINUTE_MEASUREMENT_DURATION_MS) {
               finalizeMeasurement(Math.round(smoothed));
             }
           } else {
-            // Modul standard
             const timedOut = elapsedMs >= MAX_MEASUREMENT_DURATION_MS;
-            if (hasEnoughBpm && (hasEnoughIbi || timedOut)) {
+            if (hasEnoughBpm || timedOut) {
               finalizeMeasurement(Math.round(smoothed));
             }
           }
@@ -324,18 +292,16 @@ export default function HeartRateMonitor() {
     filterRef.current.reset();
     dataBufferRef.current = [];
     validReadingsRef.current = [];
-    allIBIsRef.current = [];
     measurementStartMsRef.current = null;
     rollingMeanRef.current = 0;
     rollingM2Ref.current = 0;
     rollingCountRef.current = 0;
     setCurrentBPM(null);
-    setAdvancedMetrics(null);
     setWaveform([]);
     setFingerDetected(false);
     detectionPhaseRef.current = "waiting";
 
-    modeRef.current = mode; // Sync state to ref for worklet access
+    modeRef.current = mode;
     setIsMonitoring(true);
   }, [hasPermission, requestPermission, mode]);
 
@@ -347,29 +313,49 @@ export default function HeartRateMonitor() {
     setProgress(0);
   }, []);
 
-  const finalizeMeasurement = async (finalBPM: number) => {
+  const finalizeMeasurement = (finalBPM: number) => {
     stopMonitoring();
+    setPendingBPM(finalBPM);
+    setSelectedTag(null);
+    setCustomTag("");
+    setShowCustomInput(false);
+    setTagModalVisible(true);
+  };
+
+  const persistMeasurement = async (tagToSave: string | null) => {
+    if (pendingBPM === null) return;
     setIsSaving(true);
-    let rmssdToSave: number | null = null;
-    if (allIBIsRef.current.length >= MIN_IBI_COUNT_FOR_HRV) {
-      const { rmssd } = calculateHRV(allIBIsRef.current);
-      if (Number.isFinite(rmssd) && rmssd > 0) {
-        rmssdToSave = rmssd;
-      }
-    }
-    const { error } = await addMeasurement(finalBPM, rmssdToSave);
+    const { error } = await addMeasurement(pendingBPM, tagToSave);
     setIsSaving(false);
+    setTagModalVisible(false);
+    const finalBPM = pendingBPM;
+    setPendingBPM(null);
     if (error) {
       Alert.alert(
-        "Înregistrat",
-        `${finalBPM} BPM${rmssdToSave !== null ? `\nRMSSD: ${Math.round(rmssdToSave)} ms` : ""} (Salvare eșuată: ${error.message})`,
+        "Saved",
+        `${finalBPM} BPM${tagToSave ? `\nTag: ${tagToSave}` : ""} (Save failed: ${error.message})`,
       );
     } else {
       Alert.alert(
-        "Succes",
-        `${finalBPM} BPM${rmssdToSave !== null ? `\nRMSSD: ${Math.round(rmssdToSave)} ms` : ""}`,
+        "Success",
+        `${finalBPM} BPM${tagToSave ? `\nTag: ${tagToSave}` : ""}`,
       );
     }
+  };
+
+  const handleSaveWithTag = () => {
+    let tag: string | null = null;
+    if (showCustomInput) {
+      const trimmed = customTag.trim();
+      if (trimmed.length > 0) tag = trimmed;
+    } else if (selectedTag) {
+      tag = selectedTag;
+    }
+    void persistMeasurement(tag);
+  };
+
+  const handleSkipTag = () => {
+    void persistMeasurement(null);
   };
 
   // ─── Permission / device guard ──────────────────────────────────────────────
@@ -380,13 +366,13 @@ export default function HeartRateMonitor() {
         <View style={styles.permissionContainer}>
           <Entypo name="camera" size={60} color="#fff" />
           <Text style={styles.permissionText}>
-            Acesul la cameră este necesar
+            Camera access is required
           </Text>
           <TouchableOpacity
             onPress={requestPermission}
             style={styles.permissionBtn}
           >
-            <Text style={styles.permissionBtnText}>Permite Accesul</Text>
+            <Text style={styles.permissionBtnText}>Grant Access</Text>
           </TouchableOpacity>
         </View>
       </LinearGradient>
@@ -416,12 +402,12 @@ export default function HeartRateMonitor() {
                 <View style={styles.iconContainer}>
                   <Ionicons name="finger-print" size={54} color="black" />
                 </View>
-                <Text style={styles.instructionTitle}>Plasează Degetul</Text>
+                <Text style={styles.instructionTitle}>Place Your Finger</Text>
                 <Text style={styles.instructionSubtitle}>
-                  Acoperă complet camera și blițul
+                  Fully cover the camera and flash
                 </Text>
                 <View style={styles.tipContainer}>
-                  <Text style={styles.tipText}>Ține mâna nemișcată</Text>
+                  <Text style={styles.tipText}>Keep your hand still</Text>
                 </View>
               </View>
             ) : (
@@ -450,36 +436,11 @@ export default function HeartRateMonitor() {
                 {currentBPM && (
                   <View style={styles.statusBadge}>
                     <View style={styles.pulseIndicator} />
-                    <Text style={styles.statusText}>Măsurare...</Text>
+                    <Text style={styles.statusText}>Measuring...</Text>
                   </View>
                 )}
 
                 <PulseWave data={waveform} height={80} />
-
-                <View style={styles.metricsGrid}>
-                  <View style={styles.metricCard}>
-                    <Text style={styles.metricLabel}>HRV-RMSSD</Text>
-                    {advancedMetrics?.hrvReady ? (
-                      <>
-                        <Text style={styles.metricValue}>
-                          {advancedMetrics.rmssd.toFixed(1)}
-                        </Text>
-                        <Text style={styles.metricUnit}>ms</Text>
-                      </>
-                    ) : (
-                      <>
-                        <Text
-                          style={[styles.metricValue, styles.metricComputing]}
-                        >
-                          {advancedMetrics
-                            ? `${advancedMetrics.ibiCount}/${MIN_IBI_COUNT_FOR_HRV}`
-                            : "--"}
-                        </Text>
-                        <Text style={styles.metricUnit}>bătăi</Text>
-                      </>
-                    )}
-                  </View>
-                </View>
 
                 <View style={styles.progressContainer}>
                   <View style={styles.progressBarWrapper}>
@@ -507,7 +468,7 @@ export default function HeartRateMonitor() {
               disabled={isSaving}
             >
               <Text style={styles.cancelText}>
-                {isSaving ? "Se salvează..." : "Anulează"}
+                {isSaving ? "Saving..." : "Cancel"}
               </Text>
             </TouchableOpacity>
           </Animated.View>
@@ -523,8 +484,8 @@ export default function HeartRateMonitor() {
               <Text style={styles.welcomeTitle}>Heart Rate Monitor</Text>
               <Text style={styles.welcomeSubtitle}>
                 {mode === "standard"
-                  ? "Măsoară pulsul rapid (aprox. 15 secunde)"
-                  : "Măsurătoare continuă timp de 60 de secunde"}
+                  ? "Quick measurement (about 15 seconds)"
+                  : "Continuous measurement for 60 seconds"}
               </Text>
             </View>
 
@@ -560,7 +521,7 @@ export default function HeartRateMonitor() {
                     mode === "minute" && styles.modeBtnTextActive,
                   ]}
                 >
-                  1 Minut
+                  1 Minute
                 </Text>
               </TouchableOpacity>
             </View>
@@ -573,12 +534,130 @@ export default function HeartRateMonitor() {
                 style={styles.startBtn}
               >
                 <Entypo name="controller-play" size={24} color="#fff" />
-                <Text style={styles.startText}>Start Măsurare</Text>
+                <Text style={styles.startText}>Start Measurement</Text>
               </LinearGradient>
             </TouchableOpacity>
           </View>
         )}
       </View>
+
+      {/* ── Tag selection modal ── */}
+      <Modal
+        visible={tagModalVisible}
+        transparent
+        animationType="fade"
+        onRequestClose={handleSkipTag}
+      >
+        <View style={tagStyles.overlay}>
+          <View style={tagStyles.sheet}>
+            <Text style={tagStyles.title}>Measurement complete</Text>
+            <View style={tagStyles.bpmRow}>
+              <Text style={tagStyles.bpmBig}>{pendingBPM ?? "--"}</Text>
+              <Text style={tagStyles.bpmUnit}>BPM</Text>
+            </View>
+
+            <Text style={tagStyles.subtitle}>Add a tag (optional)</Text>
+
+            {!showCustomInput ? (
+              <>
+                <View style={tagStyles.chipsWrap}>
+                  {PRESET_TAGS.map((t) => {
+                    const active = selectedTag === t;
+                    return (
+                      <TouchableOpacity
+                        key={t}
+                        onPress={() =>
+                          setSelectedTag(active ? null : t)
+                        }
+                        style={[
+                          tagStyles.chip,
+                          active && tagStyles.chipActive,
+                        ]}
+                        activeOpacity={0.8}
+                      >
+                        <Text
+                          style={[
+                            tagStyles.chipText,
+                            active && tagStyles.chipTextActive,
+                          ]}
+                        >
+                          {t}
+                        </Text>
+                      </TouchableOpacity>
+                    );
+                  })}
+                  <TouchableOpacity
+                    onPress={() => {
+                      setShowCustomInput(true);
+                      setSelectedTag(null);
+                    }}
+                    style={[tagStyles.chip, tagStyles.chipCustom]}
+                    activeOpacity={0.8}
+                  >
+                    <Ionicons name="add" size={14} color="#f0ebd8" />
+                    <Text style={tagStyles.chipText}>Custom</Text>
+                  </TouchableOpacity>
+                </View>
+              </>
+            ) : (
+              <View style={tagStyles.customWrap}>
+                <TextInput
+                  value={customTag}
+                  onChangeText={setCustomTag}
+                  placeholder="Type a tag..."
+                  placeholderTextColor="#748cab"
+                  style={tagStyles.input}
+                  maxLength={40}
+                  autoFocus
+                />
+                <TouchableOpacity
+                  onPress={() => {
+                    setShowCustomInput(false);
+                    setCustomTag("");
+                  }}
+                  style={tagStyles.backBtn}
+                >
+                  <Ionicons name="arrow-back" size={16} color="#748cab" />
+                  <Text style={tagStyles.backBtnText}>Back to suggestions</Text>
+                </TouchableOpacity>
+              </View>
+            )}
+
+            <View style={tagStyles.actions}>
+              <TouchableOpacity
+                onPress={handleSkipTag}
+                style={tagStyles.skipBtn}
+                disabled={isSaving}
+                activeOpacity={0.7}
+              >
+                <Text style={tagStyles.skipText}>
+                  {isSaving ? "..." : "Skip"}
+                </Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                onPress={handleSaveWithTag}
+                style={[
+                  tagStyles.saveBtn,
+                  (isSaving ||
+                    (!selectedTag &&
+                      (!showCustomInput || customTag.trim().length === 0))) &&
+                    tagStyles.saveBtnDisabled,
+                ]}
+                disabled={
+                  isSaving ||
+                  (!selectedTag &&
+                    (!showCustomInput || customTag.trim().length === 0))
+                }
+                activeOpacity={0.8}
+              >
+                <Text style={tagStyles.saveText}>
+                  {isSaving ? "Saving..." : "Save"}
+                </Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        </View>
+      </Modal>
     </View>
   );
 }
@@ -791,7 +870,7 @@ const styles = StyleSheet.create({
   },
   statusText: { color: "#e0e0e0", fontSize: 14, fontWeight: "600" },
 
-  progressContainer: { width: "100%", alignItems: "center", gap: 8 },
+  progressContainer: { width: "100%", alignItems: "center", gap: 8, marginTop: 8 },
   progressBarWrapper: {
     width: "100%",
     height: 8,
@@ -804,36 +883,6 @@ const styles = StyleSheet.create({
   progressFill: { height: "100%", borderRadius: 4 },
   progressText: { color: "#a0a0a0", fontSize: 13, fontWeight: "600" },
 
-  metricsGrid: {
-    flexDirection: "row",
-    justifyContent: "center",
-    marginBottom: 8,
-  },
-  metricCard: {
-    backgroundColor: "rgba(233,69,96,0.1)",
-    borderWidth: 1,
-    borderColor: "rgba(233,69,96,0.2)",
-    borderRadius: 12,
-    padding: 8,
-    minWidth: 80,
-    alignItems: "center",
-  },
-  metricLabel: {
-    color: "#920c0cff",
-    fontSize: 10,
-    fontWeight: "700",
-    letterSpacing: 0.5,
-    marginBottom: 2,
-  },
-  metricValue: { color: "#fff", fontSize: 18, fontWeight: "700" },
-  metricComputing: { color: "#a0a0a0", fontSize: 14 },
-  metricUnit: {
-    color: "#a0a0a0",
-    fontSize: 9,
-    fontWeight: "500",
-    marginTop: 1,
-  },
-
   cancelBtn: {
     marginTop: 14,
     paddingHorizontal: 24,
@@ -844,4 +893,147 @@ const styles = StyleSheet.create({
     borderColor: "rgba(255,255,255,0.1)",
   },
   cancelText: { color: "#a0a0a0", fontSize: 16, fontWeight: "600" },
+});
+
+const tagStyles = StyleSheet.create({
+  overlay: {
+    flex: 1,
+    backgroundColor: "rgba(0,0,0,0.7)",
+    justifyContent: "center",
+    alignItems: "center",
+    padding: 20,
+  },
+  sheet: {
+    width: "100%",
+    maxWidth: 420,
+    backgroundColor: "#0d1321",
+    borderRadius: 24,
+    padding: 24,
+    borderWidth: 1,
+    borderColor: "#3e5c76",
+  },
+  title: {
+    fontSize: 18,
+    fontWeight: "700",
+    color: "#f0ebd8",
+    textAlign: "center",
+    marginBottom: 12,
+  },
+  bpmRow: {
+    flexDirection: "row",
+    justifyContent: "center",
+    alignItems: "baseline",
+    marginBottom: 18,
+  },
+  bpmBig: {
+    color: "#f0ebd8",
+    fontSize: 48,
+    fontWeight: "800",
+    letterSpacing: -1,
+  },
+  bpmUnit: {
+    color: "#748cab",
+    fontSize: 16,
+    fontWeight: "700",
+    marginLeft: 8,
+  },
+  subtitle: {
+    fontSize: 14,
+    color: "#b8c5d6",
+    textAlign: "center",
+    marginBottom: 14,
+  },
+  chipsWrap: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 8,
+    justifyContent: "center",
+    marginBottom: 8,
+  },
+  chip: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 4,
+    paddingHorizontal: 14,
+    paddingVertical: 10,
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: "#3e5c76",
+    backgroundColor: "#050000",
+  },
+  chipActive: {
+    backgroundColor: "#3e5c76",
+    borderColor: "#748cab",
+  },
+  chipCustom: {
+    borderStyle: "dashed",
+  },
+  chipText: {
+    color: "#f0ebd8",
+    fontSize: 13,
+    fontWeight: "600",
+  },
+  chipTextActive: {
+    color: "#f0ebd8",
+    fontWeight: "700",
+  },
+  customWrap: {
+    marginBottom: 8,
+  },
+  input: {
+    backgroundColor: "#050000",
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: "#3e5c76",
+    paddingHorizontal: 14,
+    paddingVertical: 12,
+    color: "#f0ebd8",
+    fontSize: 15,
+    marginBottom: 8,
+  },
+  backBtn: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 4,
+    alignSelf: "flex-start",
+    paddingVertical: 4,
+  },
+  backBtnText: {
+    color: "#748cab",
+    fontSize: 13,
+    fontWeight: "600",
+  },
+  actions: {
+    flexDirection: "row",
+    gap: 12,
+    marginTop: 16,
+  },
+  skipBtn: {
+    flex: 1,
+    paddingVertical: 14,
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: "#3e5c76",
+    alignItems: "center",
+  },
+  skipText: {
+    color: "#748cab",
+    fontSize: 15,
+    fontWeight: "600",
+  },
+  saveBtn: {
+    flex: 1.4,
+    paddingVertical: 14,
+    borderRadius: 14,
+    backgroundColor: "#920c0cff",
+    alignItems: "center",
+  },
+  saveBtnDisabled: {
+    opacity: 0.5,
+  },
+  saveText: {
+    color: "#f0ebd8",
+    fontSize: 15,
+    fontWeight: "700",
+  },
 });

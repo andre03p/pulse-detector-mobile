@@ -181,7 +181,7 @@ export const fetchMeasurements = async () => {
 
   const { data, error } = await supabase
     .from("Measurement")
-    .select("id, created_at, heartRate, hrvRmssd, timeStamp, userId")
+    .select("id, created_at, heartRate, tag, timeStamp, userId")
     .eq("userId", userId)
     .order("created_at", { ascending: false })
     .limit(300);
@@ -197,14 +197,14 @@ export type MeasurementRow = {
   id: number;
   created_at: string;
   heartRate: number;
-  hrvRmssd?: number | null;
+  tag?: string | null;
   timeStamp: string;
   userId: number;
 };
 
 export const addMeasurement = async (
   heartRate: number,
-  hrvRmssd: number | null = null,
+  tag: string | null = null,
 ) => {
   const userId = await getUserId();
   if (!userId) {
@@ -214,17 +214,10 @@ export const addMeasurement = async (
 
   const timestamp = new Date().toISOString();
 
-  console.log("Saving measurement:", {
-    userId: userId,
-    heartRate,
-    hrvRmssd,
-    timestamp,
-  });
-
   const payload = {
     userId: userId,
     heartRate: heartRate,
-    hrvRmssd,
+    tag,
     timeStamp: timestamp,
     created_at: timestamp,
   };
@@ -236,11 +229,31 @@ export const addMeasurement = async (
 
   if (error) {
     console.error("Error saving measurement:", error);
-  } else {
-    console.log("Measurement saved successfully:", data);
   }
 
   return { data, error };
+};
+
+export const updateMeasurementTag = async (
+  measurementId: number,
+  tag: string | null,
+) => {
+  const userId = await getUserId();
+  if (!userId) return { data: null, error: { message: "Not authenticated" } };
+
+  const { data, error } = await supabase
+    .from("Measurement")
+    .update({ tag })
+    .eq("id", measurementId)
+    .eq("userId", userId)
+    .select()
+    .single();
+
+  if (error) {
+    console.error("Error updating measurement tag:", error);
+  }
+
+  return { data: data as MeasurementRow | null, error };
 };
 
 export const getHeartRateStats = async () => {
@@ -285,6 +298,54 @@ export const getHeartRateStats = async () => {
     },
     error: null,
   };
+};
+
+export type TagStat = {
+  tag: string;
+  count: number;
+  avgBpm: number;
+  minBpm: number;
+  maxBpm: number;
+};
+
+export const getStatsByTag = async (): Promise<{
+  data: TagStat[] | null;
+  error: any;
+}> => {
+  const userId = await getUserId();
+  if (!userId) return { data: null, error: { message: "Not authenticated" } };
+
+  const { data, error } = await supabase
+    .from("Measurement")
+    .select("heartRate, tag")
+    .eq("userId", userId);
+
+  if (error || !data) {
+    return { data: null, error };
+  }
+
+  const byTag: Record<string, number[]> = {};
+  for (const row of data as { heartRate: number; tag: string | null }[]) {
+    const key = row.tag && row.tag.trim().length > 0 ? row.tag : "Untagged";
+    byTag[key] = byTag[key] ?? [];
+    byTag[key].push(row.heartRate);
+  }
+
+  const stats: TagStat[] = Object.keys(byTag).map((tag) => {
+    const values = byTag[tag];
+    const avgBpm = Math.round(values.reduce((a, b) => a + b, 0) / values.length);
+    return {
+      tag,
+      count: values.length,
+      avgBpm,
+      minBpm: Math.min(...values),
+      maxBpm: Math.max(...values),
+    };
+  });
+
+  stats.sort((a, b) => b.count - a.count);
+
+  return { data: stats, error: null };
 };
 
 export const getWeeklyHeartRateSeries = async () => {

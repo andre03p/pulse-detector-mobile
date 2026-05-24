@@ -1,13 +1,18 @@
+import { PRESET_TAGS } from "@/components/HeartRateMonitor";
 import { useAuth } from "@/context/AuthContext";
 import {
   deleteMeasurement,
   deleteMeasurements,
   fetchMeasurements,
+  updateMeasurementTag,
 } from "@/lib/supabaseQueries";
 import Ionicons from "@expo/vector-icons/Ionicons";
 import MaterialIcons from "@expo/vector-icons/MaterialIcons";
 import { useFocusEffect } from "@react-navigation/native";
+import { File, Paths } from "expo-file-system";
 import { LinearGradient } from "expo-linear-gradient";
+import * as Print from "expo-print";
+import * as Sharing from "expo-sharing";
 import React, { useCallback, useEffect, useMemo, useState } from "react";
 import {
   ActivityIndicator,
@@ -19,6 +24,7 @@ import {
   Share,
   StyleSheet,
   Text,
+  TextInput,
   TouchableOpacity,
   View,
 } from "react-native";
@@ -29,10 +35,12 @@ interface HistoryItem {
   id: number;
   created_at: string;
   heartRate: number;
-  hrvRmssd?: number | null;
+  tag?: string | null;
   timeStamp: string;
   userId: number;
 }
+
+const UNTAGGED_KEY = "__untagged__";
 
 const MONTH_NAMES = [
   "January",
@@ -69,18 +77,48 @@ export default function History() {
     end: Date;
   } | null>(null);
 
+  // ── Tag filter state ────────────────────────────────────────────────────────
+  const [activeTagFilter, setActiveTagFilter] = useState<string | null>(null);
+  const [tagFilterVisible, setTagFilterVisible] = useState(false);
+
+  // ── Tag editing state ───────────────────────────────────────────────────────
+  const [editingItem, setEditingItem] = useState<HistoryItem | null>(null);
+  const [editTagValue, setEditTagValue] = useState<string | null>(null);
+  const [editCustomTag, setEditCustomTag] = useState("");
+  const [editCustomMode, setEditCustomMode] = useState(false);
+  const [savingTag, setSavingTag] = useState(false);
+
+  // ── Available tags (preset + any custom from data) ──────────────────────────
+  const availableTags = useMemo(() => {
+    const set = new Set<string>(PRESET_TAGS);
+    for (const h of history) {
+      if (h.tag && h.tag.trim().length > 0) set.add(h.tag);
+    }
+    return Array.from(set);
+  }, [history]);
+
   // ── Derived filtered list ───────────────────────────────────────────────────
   const filteredHistory = useMemo(() => {
-    if (!activeRange) return history;
-    const start = new Date(activeRange.start);
-    start.setHours(0, 0, 0, 0);
-    const end = new Date(activeRange.end);
-    end.setHours(23, 59, 59, 999);
-    return history.filter((item) => {
-      const d = new Date(item.created_at);
-      return d >= start && d <= end;
-    });
-  }, [history, activeRange]);
+    let result = history;
+    if (activeRange) {
+      const start = new Date(activeRange.start);
+      start.setHours(0, 0, 0, 0);
+      const end = new Date(activeRange.end);
+      end.setHours(23, 59, 59, 999);
+      result = result.filter((item) => {
+        const d = new Date(item.created_at);
+        return d >= start && d <= end;
+      });
+    }
+    if (activeTagFilter) {
+      if (activeTagFilter === UNTAGGED_KEY) {
+        result = result.filter((item) => !item.tag || item.tag.trim() === "");
+      } else {
+        result = result.filter((item) => item.tag === activeTagFilter);
+      }
+    }
+    return result;
+  }, [history, activeRange, activeTagFilter]);
 
   // ── Calendar helpers ────────────────────────────────────────────────────────
   const isSameDay = (a: Date, b: Date) =>
@@ -208,20 +246,13 @@ export default function History() {
 
   const shareFile = async (uri: string) => {
     try {
-      const SharingModule = await import("expo-sharing");
-      const Sharing = (SharingModule as any)?.default ?? SharingModule;
-      if (
-        Sharing?.isAvailableAsync &&
-        typeof Sharing.isAvailableAsync === "function"
-      ) {
-        const canShare = await Sharing.isAvailableAsync();
-        if (canShare && Sharing.shareAsync) {
-          await Sharing.shareAsync(uri);
-          return;
-        }
+      const canShare = await Sharing.isAvailableAsync();
+      if (canShare) {
+        await Sharing.shareAsync(uri);
+        return;
       }
-    } catch {
-      console.log("expo-sharing not available");
+    } catch (error) {
+      console.log("expo-sharing failed, falling back to RN Share", error);
     }
     try {
       if (Platform.OS === "ios") {
@@ -237,29 +268,19 @@ export default function History() {
 
   const exportAsCsv = async () => {
     try {
-      const FileSystemModule = await import("expo-file-system");
-      const FileSystem = (FileSystemModule as any)?.default ?? FileSystemModule;
-      const File = (FileSystem as any)?.File ?? (FileSystemModule as any)?.File;
-      const Paths =
-        (FileSystem as any)?.Paths ?? (FileSystemModule as any)?.Paths;
-      if (!File || !Paths?.document) {
-        throw new Error("expo-file-system File/Paths API not available");
-      }
-
-      const header = ["id", "created_at", "heartRate", "hrvRmssd"].join(",");
+      const header = ["id", "created_at", "heartRate", "tag"].join(",");
       const rows = filteredHistory.map((h) =>
         [
           String(h.id),
           escapeCsvValue(new Date(h.created_at).toISOString()),
           String(h.heartRate),
-          h.hrvRmssd !== null && h.hrvRmssd !== undefined
-            ? String(Math.round(h.hrvRmssd))
-            : "",
+          escapeCsvValue(h.tag ?? ""),
         ].join(","),
       );
       const fileName = `pulse_history_${Date.now()}.csv`;
-      const file = new File(Paths.document, fileName);
-      file.write([header, ...rows].join("\n"), { encoding: "utf8" });
+      const file = new File(Paths.cache, fileName);
+      file.create({ overwrite: true });
+      file.write([header, ...rows].join("\n"));
       await shareFile(file.uri);
       Alert.alert("Success", "CSV file exported successfully");
     } catch (error) {
@@ -272,27 +293,17 @@ export default function History() {
 
   const exportAsPdf = async () => {
     try {
-      const PrintModule = await import("expo-print");
-      const Print = (PrintModule as any)?.default ?? PrintModule;
-      if (
-        !Print?.printToFileAsync ||
-        typeof Print.printToFileAsync !== "function"
-      ) {
-        Alert.alert(
-          "PDF Export Unavailable",
-          "Install expo-print:\n\nnpx expo install expo-print",
-          [{ text: "OK" }],
-        );
-        return;
-      }
+      const escapeHtml = (value: string) =>
+        value
+          .replace(/&/g, "&amp;")
+          .replace(/</g, "&lt;")
+          .replace(/>/g, "&gt;")
+          .replace(/"/g, "&quot;");
       const rowsHtml = filteredHistory
         .map((h) => {
           const date = new Date(h.created_at);
-          const rmssd =
-            h.hrvRmssd !== null && h.hrvRmssd !== undefined
-              ? Math.round(h.hrvRmssd)
-              : "";
-          return `<tr><td>${date.toLocaleString()}</td><td style="text-align:right;">${h.heartRate}</td><td style="text-align:right;">${rmssd}</td></tr>`;
+          const tag = h.tag ? escapeHtml(h.tag) : "";
+          return `<tr><td>${date.toLocaleString()}</td><td style="text-align:right;">${h.heartRate}</td><td>${tag}</td></tr>`;
         })
         .join("");
       const html = `<!DOCTYPE html><html><head><meta charset="utf-8"/>
@@ -305,7 +316,7 @@ export default function History() {
         </style></head><body>
         <h1>Heart Rate History</h1>
         <p>Exported on ${new Date().toLocaleString()} · ${filteredHistory.length} readings</p>
-        <table><thead><tr><th>Date/Time</th><th style="text-align:right;">BPM</th><th style="text-align:right;">RMSSD (ms)</th></tr></thead>
+        <table><thead><tr><th>Date/Time</th><th style="text-align:right;">BPM</th><th>Tag</th></tr></thead>
         <tbody>${rowsHtml}</tbody></table></body></html>`;
       const { uri } = await Print.printToFileAsync({ html, base64: false });
       await shareFile(uri);
@@ -335,6 +346,52 @@ export default function History() {
       { text: "CSV", onPress: () => void exportAsCsv() },
       { text: "PDF", onPress: () => void exportAsPdf() },
     ]);
+  };
+
+  // ── Tag editing helpers ─────────────────────────────────────────────────────
+  const openEditTag = (item: HistoryItem) => {
+    setEditingItem(item);
+    const currentTag = item.tag ?? null;
+    if (currentTag && !PRESET_TAGS.includes(currentTag)) {
+      setEditCustomMode(true);
+      setEditCustomTag(currentTag);
+      setEditTagValue(null);
+    } else {
+      setEditCustomMode(false);
+      setEditCustomTag("");
+      setEditTagValue(currentTag);
+    }
+  };
+
+  const closeEditTag = () => {
+    setEditingItem(null);
+    setEditTagValue(null);
+    setEditCustomTag("");
+    setEditCustomMode(false);
+  };
+
+  const saveEditTag = async (clear: boolean = false) => {
+    if (!editingItem) return;
+    let newTag: string | null = null;
+    if (!clear) {
+      if (editCustomMode) {
+        const trimmed = editCustomTag.trim();
+        newTag = trimmed.length > 0 ? trimmed : null;
+      } else {
+        newTag = editTagValue;
+      }
+    }
+    setSavingTag(true);
+    const { error } = await updateMeasurementTag(editingItem.id, newTag);
+    setSavingTag(false);
+    if (error) {
+      Alert.alert("Error", "Could not update tag.");
+      return;
+    }
+    setHistory((prev) =>
+      prev.map((h) => (h.id === editingItem.id ? { ...h, tag: newTag } : h)),
+    );
+    closeEditTag();
   };
 
   // ── List helpers ────────────────────────────────────────────────────────────
@@ -486,29 +543,60 @@ export default function History() {
           style={[styles.header, { paddingTop: insets.top + 16 }]}
         >
           <View style={styles.headerContent}>
-            <Ionicons name="time" size={28} color="#f0ebd8" />
-            <Text style={styles.title}>History</Text>
+            <View style={styles.titleGroup}>
+              <Ionicons name="time" size={28} color="#f0ebd8" />
+              <Text style={styles.title}>History</Text>
+            </View>
+            <TouchableOpacity
+              style={styles.exportIconBtn}
+              onPress={handleExport}
+              hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+            >
+              <MaterialIcons name="file-download" size={20} color="#f0ebd8" />
+            </TouchableOpacity>
           </View>
 
-          {activeRange ? (
+          {activeRange || activeTagFilter ? (
             <View style={styles.filterActive}>
-              <Ionicons name="calendar" size={14} color="#f0ebd8" />
-              <Text style={styles.filterActiveText}>
-                {formatRangeLabel(activeRange.start)}
-                {isSameDay(activeRange.start, activeRange.end)
-                  ? ""
-                  : ` – ${formatRangeLabel(activeRange.end)}`}
-              </Text>
+              {activeRange && (
+                <>
+                  <Ionicons name="calendar" size={14} color="#f0ebd8" />
+                  <Text style={styles.filterActiveText}>
+                    {formatRangeLabel(activeRange.start)}
+                    {isSameDay(activeRange.start, activeRange.end)
+                      ? ""
+                      : ` – ${formatRangeLabel(activeRange.end)}`}
+                  </Text>
+                </>
+              )}
+              {activeTagFilter && (
+                <View style={styles.filterTagPill}>
+                  <Ionicons name="pricetag" size={12} color="#f0ebd8" />
+                  <Text style={styles.filterTagPillText}>
+                    {activeTagFilter === UNTAGGED_KEY
+                      ? "Untagged"
+                      : activeTagFilter}
+                  </Text>
+                  <TouchableOpacity
+                    onPress={() => setActiveTagFilter(null)}
+                    hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                  >
+                    <Ionicons name="close" size={12} color="#f0ebd8" />
+                  </TouchableOpacity>
+                </View>
+              )}
               <Text style={styles.filterCount}>
                 · {filteredHistory.length} reading
                 {filteredHistory.length !== 1 ? "s" : ""}
               </Text>
-              <TouchableOpacity
-                onPress={clearRange}
-                hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
-              >
-                <Ionicons name="close-circle" size={16} color="#f0ebd8" />
-              </TouchableOpacity>
+              {activeRange && (
+                <TouchableOpacity
+                  onPress={clearRange}
+                  hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                >
+                  <Ionicons name="close-circle" size={16} color="#f0ebd8" />
+                </TouchableOpacity>
+              )}
             </View>
           ) : (
             <Text style={styles.subtitle}>
@@ -524,15 +612,20 @@ export default function History() {
             >
               <Ionicons name="calendar-outline" size={16} color="#f0ebd8" />
               <Text style={styles.actionButtonText}>
-                {activeRange ? "Change range" : "Filter by date"}
+                {activeRange ? "Change range" : "Filter date"}
               </Text>
             </TouchableOpacity>
             <TouchableOpacity
-              style={styles.actionButton}
-              onPress={handleExport}
+              style={[
+                styles.actionButton,
+                activeTagFilter && styles.actionButtonActive,
+              ]}
+              onPress={() => setTagFilterVisible(true)}
             >
-              <MaterialIcons name="file-download" size={16} color="#f0ebd8" />
-              <Text style={styles.actionButtonText}>Export</Text>
+              <Ionicons name="pricetag-outline" size={16} color="#f0ebd8" />
+              <Text style={styles.actionButtonText}>
+                {activeTagFilter ? "Tag set" : "Filter tag"}
+              </Text>
             </TouchableOpacity>
             <TouchableOpacity
               style={[
@@ -569,7 +662,11 @@ export default function History() {
                 overshootRight={false}
                 renderRightActions={() => renderRightActions(item.id)}
               >
-                <View style={styles.historyCard}>
+                <TouchableOpacity
+                  onPress={() => openEditTag(item)}
+                  activeOpacity={0.85}
+                  style={styles.historyCard}
+                >
                   <View style={styles.cardLeft}>
                     <Text style={styles.cardDate}>
                       {formatDate(item.created_at)}
@@ -577,10 +674,22 @@ export default function History() {
                     <Text style={styles.cardTime}>
                       {formatTime(item.created_at)}
                     </Text>
-                    {item.hrvRmssd !== null && item.hrvRmssd !== undefined && (
-                      <Text style={styles.cardRmssd}>
-                        RMSSD: {Math.round(item.hrvRmssd)} ms
-                      </Text>
+                    {item.tag ? (
+                      <View style={styles.cardTag}>
+                        <Ionicons name="pricetag" size={11} color="#f0ebd8" />
+                        <Text style={styles.cardTagText}>{item.tag}</Text>
+                      </View>
+                    ) : (
+                      <View style={[styles.cardTag, styles.cardTagEmpty]}>
+                        <Ionicons
+                          name="add-circle-outline"
+                          size={11}
+                          color="#748cab"
+                        />
+                        <Text style={styles.cardTagEmptyText}>
+                          Add tag
+                        </Text>
+                      </View>
                     )}
                   </View>
                   <LinearGradient
@@ -592,7 +701,7 @@ export default function History() {
                     <Text style={styles.bpmValue}>{item.heartRate}</Text>
                     <Text style={styles.bpmLabel}>BPM</Text>
                   </LinearGradient>
-                </View>
+                </TouchableOpacity>
               </Swipeable>
             ))
           )}
@@ -681,6 +790,174 @@ export default function History() {
           </View>
         </View>
       </Modal>
+
+      {/* ── Tag filter modal ── */}
+      <Modal
+        visible={tagFilterVisible}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setTagFilterVisible(false)}
+      >
+        <TouchableOpacity
+          style={tagModalStyles.overlay}
+          activeOpacity={1}
+          onPress={() => setTagFilterVisible(false)}
+        >
+          <TouchableOpacity
+            activeOpacity={1}
+            style={tagModalStyles.sheet}
+            onPress={() => {}}
+          >
+            <Text style={tagModalStyles.title}>Filter by tag</Text>
+            <ScrollView style={{ maxHeight: 360 }}>
+              <View style={tagModalStyles.chipsWrap}>
+                <TouchableOpacity
+                  onPress={() => {
+                    setActiveTagFilter(null);
+                    setTagFilterVisible(false);
+                  }}
+                  style={[
+                    tagModalStyles.chip,
+                    !activeTagFilter && tagModalStyles.chipActive,
+                  ]}
+                >
+                  <Text style={tagModalStyles.chipText}>All</Text>
+                </TouchableOpacity>
+                <TouchableOpacity
+                  onPress={() => {
+                    setActiveTagFilter(UNTAGGED_KEY);
+                    setTagFilterVisible(false);
+                  }}
+                  style={[
+                    tagModalStyles.chip,
+                    activeTagFilter === UNTAGGED_KEY &&
+                      tagModalStyles.chipActive,
+                  ]}
+                >
+                  <Text style={tagModalStyles.chipText}>Untagged</Text>
+                </TouchableOpacity>
+                {availableTags.map((t) => (
+                  <TouchableOpacity
+                    key={t}
+                    onPress={() => {
+                      setActiveTagFilter(t);
+                      setTagFilterVisible(false);
+                    }}
+                    style={[
+                      tagModalStyles.chip,
+                      activeTagFilter === t && tagModalStyles.chipActive,
+                    ]}
+                  >
+                    <Text style={tagModalStyles.chipText}>{t}</Text>
+                  </TouchableOpacity>
+                ))}
+              </View>
+            </ScrollView>
+          </TouchableOpacity>
+        </TouchableOpacity>
+      </Modal>
+
+      {/* ── Edit tag modal ── */}
+      <Modal
+        visible={!!editingItem}
+        transparent
+        animationType="fade"
+        onRequestClose={closeEditTag}
+      >
+        <View style={tagModalStyles.overlay}>
+          <View style={tagModalStyles.sheet}>
+            <Text style={tagModalStyles.title}>Edit tag</Text>
+            {editingItem && (
+              <Text style={tagModalStyles.subtitle}>
+                {editingItem.heartRate} BPM · {formatDate(editingItem.created_at)}{" "}
+                {formatTime(editingItem.created_at)}
+              </Text>
+            )}
+
+            {!editCustomMode ? (
+              <View style={tagModalStyles.chipsWrap}>
+                {PRESET_TAGS.map((t) => {
+                  const active = editTagValue === t;
+                  return (
+                    <TouchableOpacity
+                      key={t}
+                      onPress={() =>
+                        setEditTagValue(active ? null : t)
+                      }
+                      style={[
+                        tagModalStyles.chip,
+                        active && tagModalStyles.chipActive,
+                      ]}
+                    >
+                      <Text style={tagModalStyles.chipText}>{t}</Text>
+                    </TouchableOpacity>
+                  );
+                })}
+                <TouchableOpacity
+                  onPress={() => {
+                    setEditCustomMode(true);
+                    setEditTagValue(null);
+                  }}
+                  style={[tagModalStyles.chip, tagModalStyles.chipCustom]}
+                >
+                  <Ionicons name="add" size={14} color="#f0ebd8" />
+                  <Text style={tagModalStyles.chipText}>Custom</Text>
+                </TouchableOpacity>
+              </View>
+            ) : (
+              <View>
+                <TextInput
+                  value={editCustomTag}
+                  onChangeText={setEditCustomTag}
+                  placeholder="Type a tag..."
+                  placeholderTextColor="#748cab"
+                  style={tagModalStyles.input}
+                  maxLength={40}
+                  autoFocus
+                />
+                <TouchableOpacity
+                  onPress={() => {
+                    setEditCustomMode(false);
+                    setEditCustomTag("");
+                  }}
+                  style={tagModalStyles.backBtn}
+                >
+                  <Ionicons name="arrow-back" size={16} color="#748cab" />
+                  <Text style={tagModalStyles.backBtnText}>
+                    Back to suggestions
+                  </Text>
+                </TouchableOpacity>
+              </View>
+            )}
+
+            <View style={tagModalStyles.actions}>
+              <TouchableOpacity
+                onPress={() => void saveEditTag(true)}
+                disabled={savingTag}
+                style={tagModalStyles.clearBtn}
+              >
+                <Text style={tagModalStyles.clearBtnText}>Clear</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                onPress={closeEditTag}
+                disabled={savingTag}
+                style={tagModalStyles.skipBtn}
+              >
+                <Text style={tagModalStyles.skipText}>Cancel</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                onPress={() => void saveEditTag(false)}
+                disabled={savingTag}
+                style={tagModalStyles.saveBtn}
+              >
+                <Text style={tagModalStyles.saveText}>
+                  {savingTag ? "..." : "Save"}
+                </Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        </View>
+      </Modal>
     </View>
   );
 }
@@ -699,8 +976,25 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     justifyContent: "center",
     alignItems: "center",
-    gap: 12,
     marginBottom: 8,
+    position: "relative",
+  },
+  titleGroup: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 12,
+  },
+  exportIconBtn: {
+    position: "absolute",
+    right: 0,
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    borderWidth: 1,
+    borderColor: "#3e5c76",
+    backgroundColor: "#0d1321",
+    justifyContent: "center",
+    alignItems: "center",
   },
   title: {
     fontSize: 32,
@@ -729,6 +1023,24 @@ const styles = StyleSheet.create({
   filterCount: {
     fontSize: 14,
     color: "#b8c5d6",
+  },
+  filterTagPill: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 4,
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+    borderRadius: 999,
+    backgroundColor: "#3e5c76",
+  },
+  filterTagPillText: {
+    fontSize: 13,
+    color: "#f0ebd8",
+    fontWeight: "600",
+  },
+  actionButtonActive: {
+    backgroundColor: "#3e5c76",
+    borderColor: "#748cab",
   },
   headerActions: {
     flexDirection: "row",
@@ -777,11 +1089,32 @@ const styles = StyleSheet.create({
     marginBottom: 4,
   },
   cardTime: { fontSize: 14, color: "#748cab" },
-  cardRmssd: {
-    fontSize: 13,
-    color: "#b8c5d6",
-    marginTop: 6,
+  cardTag: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 4,
+    alignSelf: "flex-start",
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderRadius: 999,
+    backgroundColor: "#3e5c76",
+    marginTop: 8,
+  },
+  cardTagText: {
+    fontSize: 12,
+    color: "#f0ebd8",
     fontWeight: "600",
+  },
+  cardTagEmpty: {
+    backgroundColor: "transparent",
+    borderWidth: 1,
+    borderColor: "#3e5c76",
+    borderStyle: "dashed",
+  },
+  cardTagEmptyText: {
+    fontSize: 12,
+    color: "#748cab",
+    fontWeight: "500",
   },
   bpmBadge: {
     paddingHorizontal: 20,
@@ -937,6 +1270,136 @@ const calStyles = StyleSheet.create({
   applyBtnText: {
     color: "#f0ebd8",
     fontSize: 15,
+    fontWeight: "700",
+  },
+});
+
+// ── Tag modal styles ────────────────────────────────────────────────────────
+const tagModalStyles = StyleSheet.create({
+  overlay: {
+    flex: 1,
+    backgroundColor: "rgba(0,0,0,0.7)",
+    justifyContent: "center",
+    alignItems: "center",
+    padding: 20,
+  },
+  sheet: {
+    width: "100%",
+    maxWidth: 420,
+    backgroundColor: "#0d1321",
+    borderRadius: 24,
+    padding: 22,
+    borderWidth: 1,
+    borderColor: "#3e5c76",
+  },
+  title: {
+    fontSize: 18,
+    fontWeight: "700",
+    color: "#f0ebd8",
+    textAlign: "center",
+    marginBottom: 8,
+  },
+  subtitle: {
+    fontSize: 13,
+    color: "#748cab",
+    textAlign: "center",
+    marginBottom: 14,
+  },
+  chipsWrap: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 8,
+    justifyContent: "center",
+    marginBottom: 8,
+    paddingVertical: 6,
+  },
+  chip: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 4,
+    paddingHorizontal: 14,
+    paddingVertical: 10,
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: "#3e5c76",
+    backgroundColor: "#050000",
+  },
+  chipActive: {
+    backgroundColor: "#3e5c76",
+    borderColor: "#748cab",
+  },
+  chipCustom: {
+    borderStyle: "dashed",
+  },
+  chipText: {
+    color: "#f0ebd8",
+    fontSize: 13,
+    fontWeight: "600",
+  },
+  input: {
+    backgroundColor: "#050000",
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: "#3e5c76",
+    paddingHorizontal: 14,
+    paddingVertical: 12,
+    color: "#f0ebd8",
+    fontSize: 15,
+    marginBottom: 8,
+  },
+  backBtn: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 4,
+    alignSelf: "flex-start",
+    paddingVertical: 4,
+  },
+  backBtnText: {
+    color: "#748cab",
+    fontSize: 13,
+    fontWeight: "600",
+  },
+  actions: {
+    flexDirection: "row",
+    gap: 8,
+    marginTop: 14,
+  },
+  clearBtn: {
+    flex: 1,
+    paddingVertical: 12,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: "#920c0cff",
+    alignItems: "center",
+  },
+  clearBtnText: {
+    color: "#920c0cff",
+    fontSize: 14,
+    fontWeight: "600",
+  },
+  skipBtn: {
+    flex: 1,
+    paddingVertical: 12,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: "#3e5c76",
+    alignItems: "center",
+  },
+  skipText: {
+    color: "#748cab",
+    fontSize: 14,
+    fontWeight: "600",
+  },
+  saveBtn: {
+    flex: 1.2,
+    paddingVertical: 12,
+    borderRadius: 12,
+    backgroundColor: "#3e5c76",
+    alignItems: "center",
+  },
+  saveText: {
+    color: "#f0ebd8",
+    fontSize: 14,
     fontWeight: "700",
   },
 });

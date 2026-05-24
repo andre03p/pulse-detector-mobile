@@ -2,7 +2,9 @@ import WeeklyBpmChart from "@/components/WeeklyBpmChart";
 import { useAuth } from "@/context/AuthContext";
 import {
   getHeartRateStats,
+  getStatsByTag,
   getWeeklyHeartRateSeries,
+  TagStat,
 } from "@/lib/supabaseQueries";
 import Ionicons from "@expo/vector-icons/Ionicons";
 import { useFocusEffect } from "@react-navigation/native";
@@ -36,16 +38,19 @@ export default function Stats() {
   const [weeklySeries, setWeeklySeries] = useState<
     { day: string; avg: number; count: number }[]
   >([]);
+  const [tagStats, setTagStats] = useState<TagStat[]>([]);
 
   const loadStats = async () => {
     try {
-      const [{ data, error }, weekly] = await Promise.all([
+      const [{ data, error }, weekly, byTag] = await Promise.all([
         getHeartRateStats(),
         getWeeklyHeartRateSeries(),
+        getStatsByTag(),
       ]);
 
       if (!error && data) setStats(data);
       if (!weekly.error && weekly.data) setWeeklySeries(weekly.data);
+      if (!byTag.error && byTag.data) setTagStats(byTag.data);
     } catch (error) {
       console.error("Error loading stats:", error);
     } finally {
@@ -132,6 +137,34 @@ export default function Stats() {
           <View style={styles.chartCard}>
             <Text style={styles.cardTitle}>Weekly Trend</Text>
             <WeeklyBpmChart data={weeklySeries} />
+          </View>
+        )}
+
+        {/* By Tag */}
+        {tagStats.length > 0 && (
+          <View style={[styles.infoCard, styles.tagCardSpacing]}>
+            <Text style={styles.infoTitle}>By Tag</Text>
+            <Text style={styles.infoSubtitle}>
+              Average BPM by measurement context
+            </Text>
+            {tagStats.map((s) => (
+              <View key={s.tag} style={styles.tagRow}>
+                <View style={styles.tagRowLeft}>
+                  <Ionicons name="pricetag" size={14} color="#748cab" />
+                  <Text style={styles.tagName} numberOfLines={1}>
+                    {s.tag}
+                  </Text>
+                  <Text style={styles.tagCount}>· {s.count}</Text>
+                </View>
+                <View style={styles.tagRowRight}>
+                  <Text style={styles.tagAvg}>{s.avgBpm}</Text>
+                  <Text style={styles.tagAvgUnit}>BPM</Text>
+                  <Text style={styles.tagRange}>
+                    {s.minBpm}–{s.maxBpm}
+                  </Text>
+                </View>
+              </View>
+            ))}
           </View>
         )}
 
@@ -358,6 +391,56 @@ const styles = StyleSheet.create({
   },
   zonesContainer: {
     gap: 0,
+  },
+  tagCardSpacing: {
+    marginBottom: 16,
+  },
+  tagRow: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+    paddingVertical: 10,
+    borderBottomWidth: 1,
+    borderBottomColor: "rgba(62,92,118,0.3)",
+  },
+  tagRowLeft: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+    flex: 1,
+    paddingRight: 8,
+  },
+  tagName: {
+    color: "#f0ebd8",
+    fontSize: 14,
+    fontWeight: "600",
+    flexShrink: 1,
+  },
+  tagCount: {
+    color: "#748cab",
+    fontSize: 12,
+    fontWeight: "500",
+  },
+  tagRowRight: {
+    flexDirection: "row",
+    alignItems: "baseline",
+    gap: 4,
+  },
+  tagAvg: {
+    color: "#f0ebd8",
+    fontSize: 18,
+    fontWeight: "700",
+  },
+  tagAvgUnit: {
+    color: "#748cab",
+    fontSize: 11,
+    fontWeight: "600",
+    marginRight: 8,
+  },
+  tagRange: {
+    color: "#748cab",
+    fontSize: 12,
+    fontWeight: "500",
   },
 
   // Loading
