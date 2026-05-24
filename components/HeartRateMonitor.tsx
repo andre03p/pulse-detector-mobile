@@ -21,6 +21,8 @@ import React, {
 import {
   Alert,
   Animated,
+  Platform,
+  Share,
   StyleSheet,
   Text,
   TouchableOpacity,
@@ -46,6 +48,18 @@ interface AdvancedMetrics {
   hrvReady: boolean; // false while accumulating < MIN_IBI_COUNT IBIs
   ibiCount: number; // how many intervals have been accumulated
 }
+
+// One BPM sample per completed 1-minute window (Empatica-compatible).
+interface PerMinuteSample {
+  unix: number; // seconds since epoch at start of the minute window
+  iso: string; // ISO-8601 timestamp at start of the minute window
+  bpm: number; // mean of valid BPM estimates collected during that minute
+}
+
+type CaptureMode = "single" | "compare";
+
+// Length of the rolling per-minute window used in compare mode.
+const COMPARE_WINDOW_MS = 60_000;
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 const SAMPLING_RATE = 30;
@@ -90,6 +104,19 @@ export default function HeartRateMonitor() {
   const [advancedMetrics, setAdvancedMetrics] =
     useState<AdvancedMetrics | null>(null);
 
+  // ─── Compare-mode state ─────────────────────────────────────────────────────
+  // Compare mode: continuous capture until the user presses Stop & Export.
+  // For each completed 60 s window we store one BPM sample (mean of valid
+  // ensemble estimates in that minute), then export them as CSV with the same
+  // 1-value-per-minute granularity as the Empatica EmbracePlus pulse-rate
+  // digital biomarker. The CSV is directly comparable: same time grid, same
+  // unit (BPM), same minute-level smoothing.
+  const [mode, setMode] = useState<CaptureMode>("single");
+  const [perMinuteSamples, setPerMinuteSamples] = useState<PerMinuteSample[]>(
+    [],
+  );
+  const [partialMinuteCount, setPartialMinuteCount] = useState(0);
+
   const pulseAnim = useRef(new Animated.Value(1)).current;
   const fadeAnim = useRef(new Animated.Value(0)).current;
 
@@ -107,6 +134,14 @@ export default function HeartRateMonitor() {
   const allIBIsRef = useRef<number[]>([]);
 
   const measurementStartMsRef = useRef<number | null>(null);
+
+  // ─── Compare-mode refs ──────────────────────────────────────────────────────
+  // Current minute window: epoch-aligned to floor(start / 60s) so each sample's
+  // timestamp lands on a clean minute boundary just like the Empatica export.
+  const modeRef = useRef<CaptureMode>("single");
+  const minuteStartMsRef = useRef<number | null>(null);
+  const currentMinuteBpmsRef = useRef<number[]>([]);
+  const perMinuteSamplesRef = useRef<PerMinuteSample[]>([]);
 
   const detectionPhaseRef = useRef<"waiting" | "measuring">("waiting");
   const validReadingsRef = useRef<number[]>([]);
@@ -285,6 +320,43 @@ export default function HeartRateMonitor() {
             }
           }
 
+          // ── Compare mode: bucket BPMs into 1-minute windows ───────────────
+          if (modeRef.current === "compare") {
+            if (minuteStartMsRef.current === null) {
+              minuteStartMsRef.current = now;
+            }
+            currentMinuteBpmsRef.current.push(estimate.bpm);
+
+            // Close the window when ≥ 60s have elapsed since the window opened
+            const windowElapsed = now - minuteStartMsRef.current;
+            if (windowElapsed >= COMPARE_WINDOW_MS) {
+              const bpms = currentMinuteBpmsRef.current;
+              if (bpms.length > 0) {
+                const meanBpm =
+                  bpms.reduce((a, b) => a + b, 0) / bpms.length;
+                // Align stamp to the START of the minute window
+                const startMs = minuteStartMsRef.current;
+                const sample: PerMinuteSample = {
+                  unix: Math.floor(startMs / 1000),
+                  iso: new Date(startMs).toISOString(),
+                  bpm: Math.round(meanBpm * 10) / 10, // 0.1 BPM precision
+                };
+                perMinuteSamplesRef.current = [
+                  ...perMinuteSamplesRef.current,
+                  sample,
+                ];
+                setPerMinuteSamples(perMinuteSamplesRef.current);
+              }
+              currentMinuteBpmsRef.current = [];
+              minuteStartMsRef.current = now;
+              setPartialMinuteCount(0);
+            } else {
+              setPartialMinuteCount(currentMinuteBpmsRef.current.length);
+            }
+            // Compare mode never auto-finalizes — user controls stop.
+            return;
+          }
+
           const hasEnoughBpm =
             validReadingsRef.current.length >= MIN_VALID_READINGS;
           const hasEnoughIbi =
@@ -304,6 +376,7 @@ export default function HeartRateMonitor() {
       }
     }
   }, []);
+
 
   // ─── Worklet bridge ─────────────────────────────────────────────────────────
   // Memoized so it is not recreated on every render (waveform / BPM state updates
@@ -359,8 +432,19 @@ export default function HeartRateMonitor() {
     setWaveform([]);
     setFingerDetected(false);
     detectionPhaseRef.current = "waiting";
+
+    // Compare-mode reset — keep the ref in sync with state so the worklet
+    // callback (which closes over modeRef, not the `mode` state) sees the
+    // correct value from frame 1.
+    modeRef.current = mode;
+    minuteStartMsRef.current = null;
+    currentMinuteBpmsRef.current = [];
+    perMinuteSamplesRef.current = [];
+    setPerMinuteSamples([]);
+    setPartialMinuteCount(0);
+
     setIsMonitoring(true);
-  }, [hasPermission, requestPermission]);
+  }, [hasPermission, requestPermission, mode]);
 
   const stopMonitoring = useCallback(() => {
     setIsMonitoring(false);
@@ -368,6 +452,110 @@ export default function HeartRateMonitor() {
     detectionPhaseRef.current = "waiting";
     measurementStartMsRef.current = null;
     setProgress(0);
+  }, []);
+
+  // ─── Compare-mode export ────────────────────────────────────────────────────
+  // Writes a CSV with one row per completed 1-minute window in the same
+  // shape as the Empatica EmbracePlus pulse-rate digital biomarker, plus an
+  // ISO timestamp column for human readability:
+  //
+  //   timestamp_unix,timestamp_iso,pulse_rate_bpm
+  //   1700000000,2023-11-14T22:13:20.000Z,72.3
+  //
+  // Per-minute BPM = arithmetic mean of all valid ensemble estimates produced
+  // during that minute (≈ up to 120 estimates at one every 500 ms).
+  const shareFile = async (uri: string) => {
+    try {
+      const SharingModule = await import("expo-sharing");
+      const Sharing = (SharingModule as any)?.default ?? SharingModule;
+      if (
+        Sharing?.isAvailableAsync &&
+        typeof Sharing.isAvailableAsync === "function"
+      ) {
+        const canShare = await Sharing.isAvailableAsync();
+        if (canShare && Sharing.shareAsync) {
+          await Sharing.shareAsync(uri);
+          return;
+        }
+      }
+    } catch {
+      console.log("expo-sharing not available");
+    }
+    try {
+      if (Platform.OS === "ios") {
+        await Share.share({ url: uri });
+      } else {
+        await Share.share({ message: `File saved at: ${uri}`, url: uri });
+      }
+    } catch (error) {
+      console.error("Share error:", error);
+      Alert.alert("Export saved", `File saved to: ${uri}`);
+    }
+  };
+
+  const exportCompareCsv = async (samples: PerMinuteSample[]) => {
+    if (samples.length === 0) {
+      Alert.alert(
+        "Nothing to export",
+        "No completed 1-minute windows were recorded. Keep your finger on the camera for at least 60 s.",
+      );
+      return;
+    }
+    try {
+      const FileSystemModule = await import("expo-file-system");
+      const FileSystem = (FileSystemModule as any)?.default ?? FileSystemModule;
+      const File = (FileSystem as any)?.File ?? (FileSystemModule as any)?.File;
+      const Paths =
+        (FileSystem as any)?.Paths ?? (FileSystemModule as any)?.Paths;
+      if (!File || !Paths?.document) {
+        throw new Error("expo-file-system File/Paths API not available");
+      }
+
+      const header = "timestamp_unix,timestamp_iso,pulse_rate_bpm";
+      const rows = samples.map(
+        (s) => `${s.unix},${s.iso},${s.bpm.toFixed(1)}`,
+      );
+      const fileName = `pulse_compare_${Date.now()}.csv`;
+      const file = new File(Paths.document, fileName);
+      file.write([header, ...rows].join("\n"), { encoding: "utf8" });
+      await shareFile(file.uri);
+      Alert.alert(
+        "Exported",
+        `${samples.length} per-minute sample${samples.length !== 1 ? "s" : ""} exported`,
+      );
+    } catch (error) {
+      console.error("Export compare CSV error:", error);
+      const message =
+        error instanceof Error ? error.message : "Could not export CSV";
+      Alert.alert("Export failed", message);
+    }
+  };
+
+  const stopAndExportCompare = useCallback(async () => {
+    // Flush a partial window only if it has a reasonable amount of data
+    // (≥ 30 s worth of estimates ≈ 60 samples). Otherwise the value would be
+    // a noisy outlier inconsistent with the rest of the per-minute series.
+    if (
+      modeRef.current === "compare" &&
+      minuteStartMsRef.current !== null &&
+      currentMinuteBpmsRef.current.length >= 60
+    ) {
+      const bpms = currentMinuteBpmsRef.current;
+      const meanBpm = bpms.reduce((a, b) => a + b, 0) / bpms.length;
+      const startMs = minuteStartMsRef.current;
+      perMinuteSamplesRef.current = [
+        ...perMinuteSamplesRef.current,
+        {
+          unix: Math.floor(startMs / 1000),
+          iso: new Date(startMs).toISOString(),
+          bpm: Math.round(meanBpm * 10) / 10,
+        },
+      ];
+    }
+
+    const samplesSnapshot = perMinuteSamplesRef.current;
+    stopMonitoring();
+    await exportCompareCsv(samplesSnapshot);
   }, []);
 
   const finalizeMeasurement = async (finalBPM: number) => {
@@ -520,16 +708,49 @@ export default function HeartRateMonitor() {
                   </Text>
                 </View>
 
+                {mode === "compare" && (
+                  <View style={styles.compareStatusBox}>
+                    <Text style={styles.compareStatusTitle}>
+                      PER-MINUTE SAMPLES
+                    </Text>
+                    <Text style={styles.compareStatusValue}>
+                      {perMinuteSamples.length} complete
+                    </Text>
+                    <Text style={styles.compareStatusSub}>
+                      {partialMinuteCount} estimates buffered for next minute
+                    </Text>
+                    {perMinuteSamples.length > 0 && (
+                      <Text style={styles.compareStatusSub}>
+                        last: {perMinuteSamples[perMinuteSamples.length - 1].bpm.toFixed(1)} BPM
+                      </Text>
+                    )}
+                  </View>
+                )}
+
               </View>
             )}
 
-            <TouchableOpacity
-              onPress={stopMonitoring}
-              style={styles.cancelBtn}
-              activeOpacity={0.7}
-            >
-              <Text style={styles.cancelText}>Cancel</Text>
-            </TouchableOpacity>
+            {mode === "compare" ? (
+              <TouchableOpacity
+                onPress={stopAndExportCompare}
+                style={styles.stopExportBtn}
+                activeOpacity={0.8}
+                disabled={isSaving}
+              >
+                <Entypo name="export" size={18} color="#fff" />
+                <Text style={styles.stopExportText}>
+                  {isSaving ? "Exporting..." : "Stop & Export CSV"}
+                </Text>
+              </TouchableOpacity>
+            ) : (
+              <TouchableOpacity
+                onPress={stopMonitoring}
+                style={styles.cancelBtn}
+                activeOpacity={0.7}
+              >
+                <Text style={styles.cancelText}>Cancel</Text>
+              </TouchableOpacity>
+            )}
           </Animated.View>
         ) : (
           <View style={styles.startContainer}>
@@ -542,10 +763,49 @@ export default function HeartRateMonitor() {
               </LinearGradient>
               <Text style={styles.welcomeTitle}>Heart Rate Monitor</Text>
               <Text style={styles.welcomeSubtitle}>
-                Measure your pulse in 15 seconds
+                {mode === "single"
+                  ? "Measure your pulse in 15 seconds"
+                  : "Continuous capture — 1 BPM per minute, exported as CSV"}
               </Text>
             </View>
 
+            {/* Mode toggle: Single shot vs Empatica-compare continuous capture */}
+            <View style={styles.modeToggle}>
+              <TouchableOpacity
+                onPress={() => setMode("single")}
+                style={[
+                  styles.modeBtn,
+                  mode === "single" && styles.modeBtnActive,
+                ]}
+                activeOpacity={0.8}
+              >
+                <Text
+                  style={[
+                    styles.modeBtnText,
+                    mode === "single" && styles.modeBtnTextActive,
+                  ]}
+                >
+                  Single
+                </Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                onPress={() => setMode("compare")}
+                style={[
+                  styles.modeBtn,
+                  mode === "compare" && styles.modeBtnActive,
+                ]}
+                activeOpacity={0.8}
+              >
+                <Text
+                  style={[
+                    styles.modeBtnText,
+                    mode === "compare" && styles.modeBtnTextActive,
+                  ]}
+                >
+                  Compare (CSV)
+                </Text>
+              </TouchableOpacity>
+            </View>
 
             <TouchableOpacity onPress={startMonitoring} activeOpacity={0.8}>
               <LinearGradient
@@ -555,7 +815,9 @@ export default function HeartRateMonitor() {
                 style={styles.startBtn}
               >
                 <Entypo name="controller-play" size={24} color="#fff" />
-                <Text style={styles.startText}>Start Measurement</Text>
+                <Text style={styles.startText}>
+                  {mode === "single" ? "Start Measurement" : "Start Capture"}
+                </Text>
               </LinearGradient>
             </TouchableOpacity>
           </View>
@@ -620,7 +882,80 @@ const styles = StyleSheet.create({
   },
 
   startContainer: { alignItems: "center", width: "100%" },
-  welcomeContainer: { alignItems: "center", marginBottom: 40 },
+  welcomeContainer: { alignItems: "center", marginBottom: 24 },
+
+  // Compare/single mode toggle
+  modeToggle: {
+    flexDirection: "row",
+    backgroundColor: "rgba(255,255,255,0.06)",
+    borderRadius: 999,
+    padding: 4,
+    marginBottom: 24,
+    borderWidth: 1,
+    borderColor: "rgba(233,69,96,0.25)",
+  },
+  modeBtn: {
+    paddingHorizontal: 22,
+    paddingVertical: 10,
+    borderRadius: 999,
+  },
+  modeBtnActive: {
+    backgroundColor: "#920c0cff",
+  },
+  modeBtnText: {
+    color: "#a0a0a0",
+    fontSize: 14,
+    fontWeight: "600",
+  },
+  modeBtnTextActive: {
+    color: "#fff",
+  },
+
+  // Compare-mode HUD
+  compareStatusBox: {
+    backgroundColor: "rgba(233,69,96,0.08)",
+    borderRadius: 14,
+    paddingHorizontal: 14,
+    paddingVertical: 10,
+    marginTop: 6,
+    marginBottom: 10,
+    borderWidth: 1,
+    borderColor: "rgba(233,69,96,0.25)",
+    alignItems: "center",
+    width: "100%",
+  },
+  compareStatusTitle: {
+    color: "#920c0cff",
+    fontSize: 11,
+    fontWeight: "700",
+    letterSpacing: 0.5,
+    marginBottom: 4,
+  },
+  compareStatusValue: {
+    color: "#fff",
+    fontSize: 18,
+    fontWeight: "700",
+  },
+  compareStatusSub: {
+    color: "#a0a0a0",
+    fontSize: 11,
+    marginTop: 2,
+  },
+  stopExportBtn: {
+    marginTop: 14,
+    paddingHorizontal: 26,
+    paddingVertical: 14,
+    borderRadius: 26,
+    backgroundColor: "#920c0cff",
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
+  },
+  stopExportText: {
+    color: "#fff",
+    fontSize: 15,
+    fontWeight: "700",
+  },
   welcomeIconContainer: {
     width: 120,
     height: 120,
