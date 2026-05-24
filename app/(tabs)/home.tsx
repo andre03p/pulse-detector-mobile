@@ -19,7 +19,7 @@ export default function Home() {
   const [greeting, setGreeting] = useState("Welcome");
   const [showMonitor, setShowMonitor] = useState(false);
   const [latestBPM, setLatestBPM] = useState<number | null>(null);
-  const [latestRmssd, setLatestRmssd] = useState<number | null>(null);
+  const [latestTag, setLatestTag] = useState<string | null>(null);
   const [totalReadings, setTotalReadings] = useState<number>(0);
   const insets = useSafeAreaInsets();
 
@@ -31,7 +31,7 @@ export default function Home() {
 
       if (!error && data && data.length > 0) {
         setLatestBPM(data[0].heartRate);
-        setLatestRmssd(data[0].hrvRmssd ?? null);
+        setLatestTag(data[0].tag ?? null);
         setTotalReadings(data.length);
       }
     } catch (error) {
@@ -106,8 +106,8 @@ export default function Home() {
                   {latestBPM !== null ? latestBPM : "--"}
                 </Text>
                 <Text style={styles.statLabel}>Latest BPM</Text>
-                <Text style={styles.statSubLabel}>
-                  RMSSD: {latestRmssd !== null ? `${Math.round(latestRmssd)} ms` : "--"}
+                <Text style={styles.statSubLabel} numberOfLines={1}>
+                  {latestTag ? latestTag : "Untagged"}
                 </Text>
               </View>
               <View style={styles.statDivider} />

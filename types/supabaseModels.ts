@@ -15,7 +15,7 @@ export interface Database {
           id: number;
           created_at: string;
           heartRate: number;
-          hrvRmssd: number | null;
+          tag: string | null;
           timeStamp: string;
           userId: number;
         };
