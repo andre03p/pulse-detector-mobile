@@ -443,7 +443,6 @@ const styles = StyleSheet.create({
     fontWeight: "500",
   },
 
-  // Loading
   loadingText: {
     fontSize: 16,
     color: "#748cab",

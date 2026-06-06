@@ -1,6 +1,4 @@
-// ============================================================================
-// BUTTERWORTH FILTER — 2nd order bandpass biquad
-// ============================================================================
+// 2nd-order bandpass biquad
 
 export class ButterworthFilter {
   private b0: number;
@@ -39,9 +37,6 @@ export class ButterworthFilter {
   }
 }
 
-// ============================================================================
-// SIGNAL PREPROCESSING
-// ============================================================================
 
 export function detrendSignal(signal: number[]): number[] {
   const n = signal.length;
@@ -73,9 +68,6 @@ export function applyHannWindow(signal: number[]): number[] {
   );
 }
 
-// ============================================================================
-// FFT
-// ============================================================================
 
 interface Complex {
   re: number;
@@ -114,9 +106,6 @@ function getMagnitude(c: Complex): number {
   return Math.sqrt(c.re * c.re + c.im * c.im);
 }
 
-// ============================================================================
-// HEART RATE ESTIMATION
-// ============================================================================
 
 export function estimateHeartRateFFT(signal: number[], fs: number): number {
   if (signal.length < 30) return 0;
@@ -231,9 +220,6 @@ export function estimateBpmFromAutocorrelation(
   return bpm >= 40 && bpm <= 220 ? bpm : 0;
 }
 
-// ============================================================================
-// ENSEMBLE HR ESTIMATION
-// ============================================================================
 
 export interface BpmEstimate {
   bpm: number;
@@ -269,9 +255,6 @@ export function estimateBpm(
   return { bpm: 0, confidence: 0, method: "ensemble_uncertain" };
 }
 
-// ============================================================================
-// SIGNAL QUALITY
-// ============================================================================
 
 /**
  * Signal Quality Index — 3 weighted metrics, returns 0–100.
@@ -310,9 +293,6 @@ export function calculateSignalQuality(signal: number[], fs: number): number {
   return weights.reduce((sum, w, i) => sum + w * scores[i], 0) * 100;
 }
 
-// ============================================================================
-// UTILITY
-// ============================================================================
 
 export function median(values: number[]): number {
   if (values.length === 0) return 0;
