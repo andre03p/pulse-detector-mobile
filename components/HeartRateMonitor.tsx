@@ -4,6 +4,7 @@ import {
   ButterworthFilter,
   calculateAdvancedSQI,
   estimateHeartRateEnsemble,
+  mean,
   weightedMedian,
 } from "@/utils/heartRateDetection";
 import Entypo from "@expo/vector-icons/Entypo";
@@ -55,7 +56,8 @@ const MIN_VALID_READINGS = 12;
 
 // Measurement durations
 const MAX_MEASUREMENT_DURATION_MS = 45_000; // Standard mode (safety timeout)
-const MINUTE_MEASUREMENT_DURATION_MS = 50_000; // Continuous 1-minute mode
+// Full 60 s window so the average matches the Empatica per-minute pulse rate.
+const MINUTE_MEASUREMENT_DURATION_MS = 60_000; // Continuous 1-minute mode
 
 export const PRESET_TAGS = ["Rest", "Low effort", "High effort"];
 
@@ -82,7 +84,10 @@ export default function HeartRateMonitor() {
 
   const device = useCameraDevice("back");
   const { hasPermission, requestPermission } = useCameraPermission();
-  const format = useCameraFormat(device, [{ fps: SAMPLING_RATE }]);
+  const format = useCameraFormat(device, [
+    { fps: SAMPLING_RATE },
+    { videoResolution: { width: 640, height: 480 } },
+  ]);
   const { resize } = useResizePlugin();
 
   const filterRef = useRef(new ButterworthFilter(SAMPLING_RATE));
@@ -94,6 +99,7 @@ export default function HeartRateMonitor() {
   const validReadingsRef = useRef<number[]>([]);
   const lastProcessTimeRef = useRef<number>(0);
   const lastWaveUpdateRef = useRef<number>(0);
+  const lastProgressUpdateRef = useRef<number>(0);
 
   const rollingMeanRef = useRef<number>(0);
   const rollingM2Ref = useRef<number>(0);
@@ -192,13 +198,22 @@ export default function HeartRateMonitor() {
         ? now - measurementStartMsRef.current
         : 0;
 
-    let currentProgress = 0;
-    if (modeRef.current === "minute") {
-      currentProgress = Math.min(elapsedMs / MINUTE_MEASUREMENT_DURATION_MS, 1);
-    } else {
-      currentProgress = Math.min(dataBufferRef.current.length / WINDOW_SIZE, 1);
+    if (now - lastProgressUpdateRef.current > 100) {
+      lastProgressUpdateRef.current = now;
+      let currentProgress = 0;
+      if (modeRef.current === "minute") {
+        currentProgress = Math.min(
+          elapsedMs / MINUTE_MEASUREMENT_DURATION_MS,
+          1,
+        );
+      } else {
+        currentProgress = Math.min(
+          dataBufferRef.current.length / WINDOW_SIZE,
+          1,
+        );
+      }
+      setProgress(currentProgress);
     }
-    setProgress(currentProgress);
 
     // ── Waveform display (throttled to ~8 Hz) ───────────────────────────────
     if (now - lastWaveUpdateRef.current > 120) {
@@ -230,21 +245,28 @@ export default function HeartRateMonitor() {
           estimate.confidence >= 0.4
         ) {
           validReadingsRef.current.push(estimate.bpm);
-          const smoothed = weightedMedian(validReadingsRef.current.slice(-7));
-          setCurrentBPM(Math.round(smoothed));
+
+          // Minute mode reports the AVERAGE over the whole window to match the
+          // Empatica EmbracePlus per-minute pulse rate (it averages, never peaks).
+          // Standard mode keeps a responsive value weighted toward recent readings.
+          const isMinute = modeRef.current === "minute";
+          const displayBpm = isMinute
+            ? mean(validReadingsRef.current)
+            : weightedMedian(validReadingsRef.current.slice(-7));
+          setCurrentBPM(Math.round(displayBpm));
 
           // ── Finalize measurement ────────────────────────────────────────────
           const hasEnoughBpm =
             validReadingsRef.current.length >= MIN_VALID_READINGS;
 
-          if (modeRef.current === "minute") {
+          if (isMinute) {
             if (elapsedMs >= MINUTE_MEASUREMENT_DURATION_MS) {
-              finalizeMeasurement(Math.round(smoothed));
+              finalizeMeasurement(Math.round(displayBpm));
             }
           } else {
             const timedOut = elapsedMs >= MAX_MEASUREMENT_DURATION_MS;
             if (hasEnoughBpm || timedOut) {
-              finalizeMeasurement(Math.round(smoothed));
+              finalizeMeasurement(Math.round(displayBpm));
             }
           }
         }
@@ -296,6 +318,9 @@ export default function HeartRateMonitor() {
     rollingMeanRef.current = 0;
     rollingM2Ref.current = 0;
     rollingCountRef.current = 0;
+    lastProgressUpdateRef.current = 0;
+    lastWaveUpdateRef.current = 0;
+    lastProcessTimeRef.current = 0;
     setCurrentBPM(null);
     setWaveform([]);
     setFingerDetected(false);
