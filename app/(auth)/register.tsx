@@ -13,7 +13,6 @@ import {
   TouchableOpacity,
   View,
 } from "react-native";
-import { useAuth } from "../../context/AuthContext";
 
 export default function Register() {
   const [email, setEmail] = useState("");
@@ -21,7 +20,6 @@ export default function Register() {
   const [confirmPassword, setConfirmPassword] = useState("");
   const [name, setName] = useState("");
   const [loading, setLoading] = useState(false);
-  const { onSendVerificationCode } = useAuth();
 
   const validateEmail = (email: string) => {
     const emailRegex = /^[\w-\.]+@([\w-]+\.)+[\w-]{2,4}$/;

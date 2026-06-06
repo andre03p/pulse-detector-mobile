@@ -18,7 +18,6 @@ interface AuthProps {
     token: string,
     newPassword: string,
   ) => Promise<any>;
-  onSendVerificationCode?: (email: string) => Promise<any>;
   onVerifyEmailWithOtp?: (
     email: string,
     token: string,
@@ -104,11 +103,6 @@ export const AuthProvider = ({ children }: any) => {
 
   const register = async (name: string, email: string, password: string) => {
     try {
-      const { data: existingUsers, error: checkError } = await supabase.rpc(
-        "check_user_exists",
-        { email_input: email },
-      );
-
       const { data, error } = await supabase.auth.signUp({
         options: {
           data: {
@@ -245,8 +239,7 @@ export const AuthProvider = ({ children }: any) => {
     newPassword: string,
   ) => {
     try {
-      const { data: verifyData, error: verifyError } =
-        await supabase.auth.verifyOtp({
+      const { error: verifyError } = await supabase.auth.verifyOtp({
           email: email,
           token: token,
           type: "email",
@@ -279,22 +272,6 @@ export const AuthProvider = ({ children }: any) => {
       return {
         error: true,
         msg: error.message || "Failed to update password",
-      };
-    }
-  };
-
-  const sendVerificationCode = async (email: string) => {
-    try {
-      return {
-        error: false,
-        msg: "Ready to create account",
-        data: null,
-      };
-    } catch (error: any) {
-      console.error("Send verification code exception:", error);
-      return {
-        error: true,
-        msg: error.message || "Failed to send verification code",
       };
     }
   };
@@ -371,7 +348,6 @@ export const AuthProvider = ({ children }: any) => {
     onLogout: logout,
     onResetPassword: resetPassword,
     onVerifyOtpAndUpdatePassword: verifyOtpAndUpdatePassword,
-    onSendVerificationCode: sendVerificationCode,
     onVerifyEmailWithOtp: verifyEmailWithOtp,
     authState,
   };

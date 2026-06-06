@@ -1,5 +1,4 @@
 import WeeklyBpmChart from "@/components/WeeklyBpmChart";
-import { useAuth } from "@/context/AuthContext";
 import {
   getHeartRateStats,
   getStatsByTag,
@@ -24,7 +23,6 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 const { width } = Dimensions.get("window");
 
 export default function Stats() {
-  const { authState } = useAuth();
   const insets = useSafeAreaInsets();
   const [isLoading, setIsLoading] = useState(true);
 

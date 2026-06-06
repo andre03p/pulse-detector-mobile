@@ -4,7 +4,7 @@ import Footer from "../../components/Footer";
 export default function TabsLayout() {
   return (
     <Tabs
-      tabBar={(props) => <Footer />}
+      tabBar={() => <Footer />}
       screenOptions={{
         headerShown: false,
       }}

@@ -77,7 +77,7 @@ export default function VerifyEmail() {
 
     try {
       // verify the OTP, don't create account again
-      const { data, error } =
+      const { error } =
         await require("../../lib/supabase").supabase.auth.verifyOtp({
           email: email,
           token: verificationCode,
@@ -114,7 +114,7 @@ export default function VerifyEmail() {
     setResending(true);
 
     try {
-      const { data, error } =
+      const { error } =
         await require("../../lib/supabase").supabase.auth.resend({
           type: "signup",
           email: email,
