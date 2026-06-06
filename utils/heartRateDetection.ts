@@ -3,10 +3,14 @@
 // ============================================================================
 
 export class ButterworthFilter {
-  private b0: number; private b2: number;
-  private a1: number; private a2: number;
-  private x1 = 0; private x2 = 0;
-  private y1 = 0; private y2 = 0;
+  private b0: number;
+  private b2: number;
+  private a1: number;
+  private a2: number;
+  private x1 = 0;
+  private x2 = 0;
+  private y1 = 0;
+  private y2 = 0;
 
   constructor(fs: number, lowCutoff = 0.667, highCutoff = 4.0) {
     const wl = Math.tan((Math.PI * lowCutoff) / fs);
@@ -21,9 +25,12 @@ export class ButterworthFilter {
   }
 
   process(x0: number): number {
-    const y0 = this.b0 * x0 + this.b2 * this.x2 - this.a1 * this.y1 - this.a2 * this.y2;
-    this.x2 = this.x1; this.x1 = x0;
-    this.y2 = this.y1; this.y1 = y0;
+    const y0 =
+      this.b0 * x0 + this.b2 * this.x2 - this.a1 * this.y1 - this.a2 * this.y2;
+    this.x2 = this.x1;
+    this.x1 = x0;
+    this.y2 = this.y1;
+    this.y1 = y0;
     return y0;
   }
 
@@ -121,10 +128,10 @@ export function estimateHeartRateFFT(signal: number[], fs: number): number {
   const powerSpectrum = fftResult.slice(0, Math.floor(n / 2)).map(getMagnitude);
   const freqResolution = fs / n;
 
-  const minIdx = Math.max(1, Math.floor(0.667 / freqResolution));
+  const minIdx = Math.max(1, Math.floor(0.6 / freqResolution));
   const maxIdx = Math.min(
     powerSpectrum.length - 2,
-    Math.ceil(3.667 / freqResolution),
+    Math.ceil(3.8 / freqResolution),
   );
 
   let maxPower = -Infinity;
@@ -246,14 +253,16 @@ export function estimateHeartRateEnsemble(
 
   if (fftBpm === 0 && autocorrBpm === 0)
     return { bpm: 0, confidence: 0, method: "no_valid_estimate" };
-  if (fftBpm === 0) return { bpm: autocorrBpm, confidence: 0.4, method: "autocorr" };
+  if (fftBpm === 0)
+    return { bpm: autocorrBpm, confidence: 0.4, method: "autocorr" };
   if (autocorrBpm === 0) return { bpm: fftBpm, confidence: 0.4, method: "fft" };
 
   const avg = Math.round((fftBpm + autocorrBpm) / 2);
   const diff = Math.abs(fftBpm - autocorrBpm);
 
-  if (diff < 6)  return { bpm: avg, confidence: 0.95, method: "ensemble_high" };
-  if (diff < 10) return { bpm: avg, confidence: 0.85, method: "ensemble_medium" };
+  if (diff < 6) return { bpm: avg, confidence: 0.95, method: "ensemble_high" };
+  if (diff < 10)
+    return { bpm: avg, confidence: 0.85, method: "ensemble_medium" };
   if (diff < 20) return { bpm: avg, confidence: 0.65, method: "ensemble_low" };
 
   // Methods disagree strongly — abstain rather than average two potentially wrong values.
@@ -278,8 +287,8 @@ export function calculateAdvancedSQI(signal: number[], fs: number): number {
   const powerSpectrum = fftResult.slice(0, Math.floor(n / 2)).map(getMagnitude);
   const freqResolution = fs / n;
 
-  const minIdx = Math.floor(0.667 / freqResolution);
-  const maxIdx = Math.ceil(4.0 / freqResolution);
+  const minIdx = Math.floor(0.6 / freqResolution);
+  const maxIdx = Math.ceil(3.8 / freqResolution);
   const cardiacBand = powerSpectrum.slice(minIdx, maxIdx + 1);
   const maxPower = Math.max(...cardiacBand);
   const totalPower = cardiacBand.reduce((a, b) => a + b, 0);
@@ -314,6 +323,16 @@ export function median(values: number[]): number {
     : (sorted[mid - 1] + sorted[mid]) / 2;
 }
 
+/**
+ * Arithmetic mean. Used for the 1-minute mode to report the average heart rate
+ * over the whole window — matching how the Empatica EmbracePlus aggregates its
+ * per-minute pulse rate (average over the minute, never the peak).
+ */
+export function mean(values: number[]): number {
+  if (values.length === 0) return 0;
+  return values.reduce((a, b) => a + b, 0) / values.length;
+}
+
 export function weightedMedian(values: number[]): number {
   if (values.length === 0) return 0;
   const weighted: number[] = [];
@@ -336,4 +355,3 @@ export function calculateSNR(signal: number[]): number {
   noisePower /= signal.length - 1;
   return noisePower > 0 ? 10 * Math.log10(signalPower / noisePower) : 0;
 }
-

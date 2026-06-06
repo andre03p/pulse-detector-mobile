@@ -1,5 +1,4 @@
 import { PRESET_TAGS } from "@/components/HeartRateMonitor";
-import { useAuth } from "@/context/AuthContext";
 import {
   deleteMeasurement,
   deleteMeasurements,
@@ -28,7 +27,7 @@ import {
   TouchableOpacity,
   View,
 } from "react-native";
-import { Swipeable } from "react-native-gesture-handler";
+import ReanimatedSwipeable from "react-native-gesture-handler/ReanimatedSwipeable";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 interface HistoryItem {
@@ -62,7 +61,6 @@ const { width: SCREEN_WIDTH } = Dimensions.get("window");
 const CELL_SIZE = Math.floor((SCREEN_WIDTH - 48) / 7);
 
 export default function History() {
-  const { authState } = useAuth();
   const [history, setHistory] = useState<HistoryItem[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const insets = useSafeAreaInsets();
@@ -657,7 +655,7 @@ export default function History() {
             </View>
           ) : (
             filteredHistory.map((item) => (
-              <Swipeable
+              <ReanimatedSwipeable
                 key={item.id}
                 overshootRight={false}
                 renderRightActions={() => renderRightActions(item.id)}
@@ -702,7 +700,7 @@ export default function History() {
                     <Text style={styles.bpmLabel}>BPM</Text>
                   </LinearGradient>
                 </TouchableOpacity>
-              </Swipeable>
+              </ReanimatedSwipeable>
             ))
           )}
         </View>
