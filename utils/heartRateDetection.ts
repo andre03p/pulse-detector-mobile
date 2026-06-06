@@ -13,15 +13,15 @@ export class ButterworthFilter {
   private y2 = 0;
 
   constructor(fs: number, lowCutoff = 0.667, highCutoff = 4.0) {
-    const wl = Math.tan((Math.PI * lowCutoff) / fs);
-    const wh = Math.tan((Math.PI * highCutoff) / fs);
-    const bw = wh - wl;
-    const w0sq = wl * wh;
-    const norm = 1 / (1 + bw + w0sq);
-    this.b0 = bw * norm;
-    this.b2 = -bw * norm;
-    this.a1 = 2 * (w0sq - 1) * norm;
-    this.a2 = (1 - bw + w0sq) * norm;
+    const warpedLow = Math.tan((Math.PI * lowCutoff) / fs);
+    const warpedHigh = Math.tan((Math.PI * highCutoff) / fs);
+    const bandwidth = warpedHigh - warpedLow;
+    const centerSq = warpedLow * warpedHigh;
+    const norm = 1 / (1 + bandwidth + centerSq);
+    this.b0 = bandwidth * norm;
+    this.b2 = -bandwidth * norm;
+    this.a1 = 2 * (centerSq - 1) * norm;
+    this.a2 = (1 - bandwidth + centerSq) * norm;
   }
 
   process(x0: number): number {
@@ -128,35 +128,35 @@ export function estimateHeartRateFFT(signal: number[], fs: number): number {
   const powerSpectrum = fftResult.slice(0, Math.floor(n / 2)).map(getMagnitude);
   const freqResolution = fs / n;
 
-  const minIdx = Math.max(1, Math.floor(0.6 / freqResolution));
-  const maxIdx = Math.min(
+  const minIndex = Math.max(1, Math.floor(0.6 / freqResolution));
+  const maxIndex = Math.min(
     powerSpectrum.length - 2,
     Math.ceil(3.8 / freqResolution),
   );
 
   let maxPower = -Infinity;
-  let peakIdx = minIdx;
-  for (let i = minIdx; i <= maxIdx; i++) {
+  let peakIndex = minIndex;
+  for (let i = minIndex; i <= maxIndex; i++) {
     if (powerSpectrum[i] > maxPower) {
       maxPower = powerSpectrum[i];
-      peakIdx = i;
+      peakIndex = i;
     }
   }
 
   const avgPower =
-    powerSpectrum.slice(minIdx, maxIdx + 1).reduce((a, b) => a + b, 0) /
-    (maxIdx - minIdx + 1);
+    powerSpectrum.slice(minIndex, maxIndex + 1).reduce((a, b) => a + b, 0) /
+    (maxIndex - minIndex + 1);
   if (maxPower < avgPower * 2) return 0;
 
-  const refinedIdx = refinePeak(powerSpectrum, peakIdx);
+  const refinedIndex = refinePeak(powerSpectrum, peakIndex);
 
-  const freqHz = refinedIdx * freqResolution;
+  const freqHz = refinedIndex * freqResolution;
   const bpm = freqHz * 60;
 
   // Harmonic check: if half-frequency also has strong power, we locked on a harmonic
-  const harmonicIdx = Math.round(refinedIdx * 2);
-  if (harmonicIdx < powerSpectrum.length) {
-    if (powerSpectrum[harmonicIdx] > maxPower * 0.7) return bpm / 2;
+  const harmonicIndex = Math.round(refinedIndex * 2);
+  if (harmonicIndex < powerSpectrum.length) {
+    if (powerSpectrum[harmonicIndex] > maxPower * 0.7) return bpm / 2;
   }
 
   return bpm >= 40 && bpm <= 220 ? bpm : 0;
@@ -183,7 +183,7 @@ function refinePeak(signal: number[], peakIndex: number): number {
   return peakIndex + Math.max(-0.5, Math.min(0.5, offset));
 }
 
-export function estimateHeartRateAutocorrelation(
+export function estimateBpmFromAutocorrelation(
   signal: number[],
   fs: number,
 ): number {
@@ -221,9 +221,9 @@ export function estimateHeartRateAutocorrelation(
   // Harmonic check for autocorrelation
   const halfLag = Math.round(refinedLag / 2);
   if (halfLag >= minLag && halfLag <= maxLag) {
-    const halfLagIdx = halfLag - minLag;
-    if (halfLagIdx >= 0 && halfLagIdx < autocorr.length) {
-      if (autocorr[halfLagIdx] > maxCorr * 0.7) refinedLag = halfLag;
+    const halfLagIndex = halfLag - minLag;
+    if (halfLagIndex >= 0 && halfLagIndex < autocorr.length) {
+      if (autocorr[halfLagIndex] > maxCorr * 0.7) refinedLag = halfLag;
     }
   }
 
@@ -235,21 +235,21 @@ export function estimateHeartRateAutocorrelation(
 // ENSEMBLE HR ESTIMATION
 // ============================================================================
 
-export interface HeartRateEstimate {
+export interface BpmEstimate {
   bpm: number;
   confidence: number;
   method: string;
 }
 
-export function estimateHeartRateEnsemble(
+export function estimateBpm(
   signal: number[],
   fs: number,
-): HeartRateEstimate {
+): BpmEstimate {
   if (signal.length < 30)
     return { bpm: 0, confidence: 0, method: "insufficient_data" };
 
   const fftBpm = estimateHeartRateFFT(signal, fs);
-  const autocorrBpm = estimateHeartRateAutocorrelation(signal, fs);
+  const autocorrBpm = estimateBpmFromAutocorrelation(signal, fs);
 
   if (fftBpm === 0 && autocorrBpm === 0)
     return { bpm: 0, confidence: 0, method: "no_valid_estimate" };
@@ -277,7 +277,7 @@ export function estimateHeartRateEnsemble(
  * Signal Quality Index — 3 weighted metrics, returns 0–100.
  * Metrics: spectral purity (0.5), SNR (0.3), amplitude stability (0.2).
  */
-export function calculateAdvancedSQI(signal: number[], fs: number): number {
+export function calculateSignalQuality(signal: number[], fs: number): number {
   if (signal.length < 30) return 0;
 
   const detrended = detrendSignal(signal);
@@ -287,9 +287,9 @@ export function calculateAdvancedSQI(signal: number[], fs: number): number {
   const powerSpectrum = fftResult.slice(0, Math.floor(n / 2)).map(getMagnitude);
   const freqResolution = fs / n;
 
-  const minIdx = Math.floor(0.6 / freqResolution);
-  const maxIdx = Math.ceil(3.8 / freqResolution);
-  const cardiacBand = powerSpectrum.slice(minIdx, maxIdx + 1);
+  const minIndex = Math.floor(0.6 / freqResolution);
+  const maxIndex = Math.ceil(3.8 / freqResolution);
+  const cardiacBand = powerSpectrum.slice(minIndex, maxIndex + 1);
   const maxPower = Math.max(...cardiacBand);
   const totalPower = cardiacBand.reduce((a, b) => a + b, 0);
   const spectralPurity = totalPower > 0 ? maxPower / totalPower : 0;
