@@ -2,8 +2,8 @@ import PulseWave from "@/components/PulseWave";
 import { addMeasurement } from "@/lib/supabaseQueries";
 import {
   ButterworthFilter,
-  calculateAdvancedSQI,
-  estimateHeartRateEnsemble,
+  calculateSignalQuality,
+  estimateBpm,
   mean,
   weightedMedian,
 } from "@/utils/heartRateDetection";
@@ -90,20 +90,20 @@ export default function HeartRateMonitor() {
   ]);
   const { resize } = useResizePlugin();
 
-  const filterRef = useRef(new ButterworthFilter(SAMPLING_RATE));
-  const dataBufferRef = useRef<number[]>([]);
-  const measurementStartMsRef = useRef<number | null>(null);
+  const filter = useRef(new ButterworthFilter(SAMPLING_RATE));
+  const signal = useRef<number[]>([]);
+  const startTime = useRef<number | null>(null);
 
-  const modeRef = useRef<CaptureMode>("standard");
-  const detectionPhaseRef = useRef<"waiting" | "measuring">("waiting");
-  const validReadingsRef = useRef<number[]>([]);
-  const lastProcessTimeRef = useRef<number>(0);
-  const lastWaveUpdateRef = useRef<number>(0);
-  const lastProgressUpdateRef = useRef<number>(0);
+  const activeMode = useRef<CaptureMode>("standard");
+  const phase = useRef<"waiting" | "measuring">("waiting");
+  const readings = useRef<number[]>([]);
+  const lastAnalysis = useRef<number>(0);
+  const lastWave = useRef<number>(0);
+  const lastProgress = useRef<number>(0);
 
-  const rollingMeanRef = useRef<number>(0);
-  const rollingM2Ref = useRef<number>(0);
-  const rollingCountRef = useRef<number>(0);
+  const runningMean = useRef<number>(0);
+  const m2 = useRef<number>(0);
+  const sampleCount = useRef<number>(0);
 
   // ─── Animations ─────────────────────────────────────────────────────────────
 
@@ -138,21 +138,21 @@ export default function HeartRateMonitor() {
 
   // ─── Frame processing (JS side) ─────────────────────────────────────────────
 
-  const processFrameData = useCallback((avgRed: number) => {
+  const handleFrame = useCallback((avgRed: number) => {
     const now = Date.now();
 
     // ── Finger detection phase ──────────────────────────────────────────────
-    if (detectionPhaseRef.current === "waiting") {
+    if (phase.current === "waiting") {
       if (avgRed > FINGER_DETECTED_THRESHOLD) {
         setFingerDetected(true);
-        detectionPhaseRef.current = "measuring";
-        measurementStartMsRef.current = now;
-        dataBufferRef.current = [];
-        validReadingsRef.current = [];
-        filterRef.current.reset();
-        rollingMeanRef.current = 0;
-        rollingM2Ref.current = 0;
-        rollingCountRef.current = 0;
+        phase.current = "measuring";
+        startTime.current = now;
+        signal.current = [];
+        readings.current = [];
+        filter.current.reset();
+        runningMean.current = 0;
+        m2.current = 0;
+        sampleCount.current = 0;
         setProgress(0);
       } else {
         setFingerDetected(false);
@@ -163,52 +163,50 @@ export default function HeartRateMonitor() {
     // ── Measuring phase ─────────────────────────────────────────────────────
     if (avgRed < FINGER_LOST_THRESHOLD) {
       setFingerDetected(false);
-      detectionPhaseRef.current = "waiting";
-      measurementStartMsRef.current = null;
+      phase.current = "waiting";
+      startTime.current = null;
       setProgress(0);
       return;
     }
 
-    const filteredValue = filterRef.current.process(avgRed);
+    const filtered = filter.current.process(avgRed);
 
-    rollingCountRef.current += 1;
-    const delta = filteredValue - rollingMeanRef.current;
-    rollingMeanRef.current += delta / rollingCountRef.current;
-    const delta2 = filteredValue - rollingMeanRef.current;
-    rollingM2Ref.current += delta * delta2;
+    sampleCount.current += 1;
+    const delta = filtered - runningMean.current;
+    runningMean.current += delta / sampleCount.current;
+    const delta2 = filtered - runningMean.current;
+    m2.current += delta * delta2;
 
-    if (rollingCountRef.current > 30) {
-      const rollingStd = Math.sqrt(
-        rollingM2Ref.current / rollingCountRef.current,
-      );
-      const deviation = Math.abs(filteredValue - rollingMeanRef.current);
-      if (rollingStd > 0 && deviation > 4 * rollingStd) {
+    if (sampleCount.current > 30) {
+      const std = Math.sqrt(m2.current / sampleCount.current);
+      const deviation = Math.abs(filtered - runningMean.current);
+      if (std > 0 && deviation > 4 * std) {
         return; // Skip artifact
       }
     }
 
-    dataBufferRef.current.push(filteredValue);
-    if (dataBufferRef.current.length > WINDOW_SIZE) {
-      dataBufferRef.current.shift();
+    signal.current.push(filtered);
+    if (signal.current.length > WINDOW_SIZE) {
+      signal.current.shift();
     }
 
     // ── Update progress ───────────────────────────────────────────────────────
     const elapsedMs =
-      measurementStartMsRef.current !== null
-        ? now - measurementStartMsRef.current
+      startTime.current !== null
+        ? now - startTime.current
         : 0;
 
-    if (now - lastProgressUpdateRef.current > 100) {
-      lastProgressUpdateRef.current = now;
+    if (now - lastProgress.current > 100) {
+      lastProgress.current = now;
       let currentProgress = 0;
-      if (modeRef.current === "minute") {
+      if (activeMode.current === "minute") {
         currentProgress = Math.min(
           elapsedMs / MINUTE_MEASUREMENT_DURATION_MS,
           1,
         );
       } else {
         currentProgress = Math.min(
-          dataBufferRef.current.length / WINDOW_SIZE,
+          signal.current.length / WINDOW_SIZE,
           1,
         );
       }
@@ -216,26 +214,26 @@ export default function HeartRateMonitor() {
     }
 
     // ── Waveform display (throttled to ~8 Hz) ───────────────────────────────
-    if (now - lastWaveUpdateRef.current > 120) {
-      lastWaveUpdateRef.current = now;
-      setWaveform(dataBufferRef.current.slice(-120));
+    if (now - lastWave.current > 120) {
+      lastWave.current = now;
+      setWaveform(signal.current.slice(-120));
     }
 
     // ── Analysis every 500 ms once the window is full ───────────────────────
     if (
-      dataBufferRef.current.length === WINDOW_SIZE &&
-      now - lastProcessTimeRef.current > 500
+      signal.current.length === WINDOW_SIZE &&
+      now - lastAnalysis.current > 500
     ) {
-      lastProcessTimeRef.current = now;
+      lastAnalysis.current = now;
 
-      const quality = calculateAdvancedSQI(
-        dataBufferRef.current,
+      const quality = calculateSignalQuality(
+        signal.current,
         SAMPLING_RATE,
       );
 
       if (quality >= MIN_QUALITY_SCORE) {
-        const estimate = estimateHeartRateEnsemble(
-          dataBufferRef.current,
+        const estimate = estimateBpm(
+          signal.current,
           SAMPLING_RATE,
         );
 
@@ -244,20 +242,20 @@ export default function HeartRateMonitor() {
           estimate.bpm <= MAX_VALID_BPM &&
           estimate.confidence >= 0.4
         ) {
-          validReadingsRef.current.push(estimate.bpm);
+          readings.current.push(estimate.bpm);
 
           // Minute mode reports the AVERAGE over the whole window to match the
           // Empatica EmbracePlus per-minute pulse rate (it averages, never peaks).
           // Standard mode keeps a responsive value weighted toward recent readings.
-          const isMinute = modeRef.current === "minute";
+          const isMinute = activeMode.current === "minute";
           const displayBpm = isMinute
-            ? mean(validReadingsRef.current)
-            : weightedMedian(validReadingsRef.current.slice(-7));
+            ? mean(readings.current)
+            : weightedMedian(readings.current.slice(-7));
           setCurrentBPM(Math.round(displayBpm));
 
           // ── Finalize measurement ────────────────────────────────────────────
           const hasEnoughBpm =
-            validReadingsRef.current.length >= MIN_VALID_READINGS;
+            readings.current.length >= MIN_VALID_READINGS;
 
           if (isMinute) {
             if (elapsedMs >= MINUTE_MEASUREMENT_DURATION_MS) {
@@ -275,9 +273,9 @@ export default function HeartRateMonitor() {
   }, []);
 
   // ─── Worklet bridge ─────────────────────────────────────────────────────────
-  const runOnJsHandler = useMemo(
-    () => Worklets.createRunOnJS(processFrameData),
-    [processFrameData],
+  const sendFrameToJs = useMemo(
+    () => Worklets.createRunOnJS(handleFrame),
+    [handleFrame],
   );
 
   // ─── Frame processor ────────────────────────────────────────────────────────
@@ -298,9 +296,9 @@ export default function HeartRateMonitor() {
         totalRed += resized[i];
       }
 
-      runOnJsHandler(totalRed / numPixels);
+      sendFrameToJs(totalRed / numPixels);
     },
-    [isMonitoring, runOnJsHandler, resize],
+    [isMonitoring, sendFrameToJs, resize],
   );
 
   // ─── Controls ───────────────────────────────────────────────────────────────
@@ -311,30 +309,30 @@ export default function HeartRateMonitor() {
       if (!granted) return;
     }
 
-    filterRef.current.reset();
-    dataBufferRef.current = [];
-    validReadingsRef.current = [];
-    measurementStartMsRef.current = null;
-    rollingMeanRef.current = 0;
-    rollingM2Ref.current = 0;
-    rollingCountRef.current = 0;
-    lastProgressUpdateRef.current = 0;
-    lastWaveUpdateRef.current = 0;
-    lastProcessTimeRef.current = 0;
+    filter.current.reset();
+    signal.current = [];
+    readings.current = [];
+    startTime.current = null;
+    runningMean.current = 0;
+    m2.current = 0;
+    sampleCount.current = 0;
+    lastProgress.current = 0;
+    lastWave.current = 0;
+    lastAnalysis.current = 0;
     setCurrentBPM(null);
     setWaveform([]);
     setFingerDetected(false);
-    detectionPhaseRef.current = "waiting";
+    phase.current = "waiting";
 
-    modeRef.current = mode;
+    activeMode.current = mode;
     setIsMonitoring(true);
   }, [hasPermission, requestPermission, mode]);
 
   const stopMonitoring = useCallback(() => {
     setIsMonitoring(false);
     setFingerDetected(false);
-    detectionPhaseRef.current = "waiting";
-    measurementStartMsRef.current = null;
+    phase.current = "waiting";
+    startTime.current = null;
     setProgress(0);
   }, []);
 
