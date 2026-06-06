@@ -65,7 +65,6 @@ export default function History() {
   const [isLoading, setIsLoading] = useState(true);
   const insets = useSafeAreaInsets();
 
-  // ── Calendar state ──────────────────────────────────────────────────────────
   const [calendarVisible, setCalendarVisible] = useState(false);
   const [calendarMonth, setCalendarMonth] = useState(() => new Date());
   const [rangeStart, setRangeStart] = useState<Date | null>(null);
@@ -75,18 +74,15 @@ export default function History() {
     end: Date;
   } | null>(null);
 
-  // ── Tag filter state ────────────────────────────────────────────────────────
   const [activeTagFilter, setActiveTagFilter] = useState<string | null>(null);
   const [tagFilterVisible, setTagFilterVisible] = useState(false);
 
-  // ── Tag editing state ───────────────────────────────────────────────────────
   const [editingItem, setEditingItem] = useState<HistoryItem | null>(null);
   const [editTagValue, setEditTagValue] = useState<string | null>(null);
   const [editCustomTag, setEditCustomTag] = useState("");
   const [editCustomMode, setEditCustomMode] = useState(false);
   const [savingTag, setSavingTag] = useState(false);
 
-  // ── Available tags (preset + any custom from data) ──────────────────────────
   const availableTags = useMemo(() => {
     const set = new Set<string>(PRESET_TAGS);
     for (const h of history) {
@@ -95,7 +91,6 @@ export default function History() {
     return Array.from(set);
   }, [history]);
 
-  // ── Derived filtered list ───────────────────────────────────────────────────
   const filteredHistory = useMemo(() => {
     let result = history;
     if (activeRange) {
@@ -118,7 +113,6 @@ export default function History() {
     return result;
   }, [history, activeRange, activeTagFilter]);
 
-  // ── Calendar helpers ────────────────────────────────────────────────────────
   const isSameDay = (a: Date, b: Date) =>
     a.getFullYear() === b.getFullYear() &&
     a.getMonth() === b.getMonth() &&
@@ -234,7 +228,6 @@ export default function History() {
       year: "numeric",
     });
 
-  // ── Export helpers ──────────────────────────────────────────────────────────
   const escapeCsvValue = (value: string) => {
     const needsQuotes =
       value.includes(",") || value.includes("\n") || value.includes('"');
@@ -346,7 +339,6 @@ export default function History() {
     ]);
   };
 
-  // ── Tag editing helpers ─────────────────────────────────────────────────────
   const openEditTag = (item: HistoryItem) => {
     setEditingItem(item);
     const currentTag = item.tag ?? null;
@@ -392,7 +384,6 @@ export default function History() {
     closeEditTag();
   };
 
-  // ── List helpers ────────────────────────────────────────────────────────────
   const renderRightActions = (id: number) => (
     <View style={styles.swipeActions}>
       <View style={styles.swipeDeleteAction}>
@@ -512,7 +503,6 @@ export default function History() {
 
   const footerHeight = 80 + (insets.bottom || 12);
 
-  // ── Loading state ───────────────────────────────────────────────────────────
   if (isLoading) {
     return (
       <View
@@ -527,7 +517,6 @@ export default function History() {
     );
   }
 
-  // ── Render ──────────────────────────────────────────────────────────────────
   return (
     <View style={styles.container}>
       <ScrollView
@@ -535,7 +524,6 @@ export default function History() {
         contentContainerStyle={{ paddingBottom: footerHeight }}
         showsVerticalScrollIndicator={false}
       >
-        {/* ── Header ── */}
         <LinearGradient
           colors={["#0d1321", "#1d2d44", "#3e5c76"]}
           style={[styles.header, { paddingTop: insets.top + 16 }]}
@@ -639,7 +627,6 @@ export default function History() {
           </View>
         </LinearGradient>
 
-        {/* ── List ── */}
         <View style={styles.content}>
           {filteredHistory.length === 0 ? (
             <View style={styles.emptyState}>
@@ -706,7 +693,6 @@ export default function History() {
         </View>
       </ScrollView>
 
-      {/* ── Calendar Modal ── */}
       <Modal
         visible={calendarVisible}
         transparent
@@ -789,7 +775,6 @@ export default function History() {
         </View>
       </Modal>
 
-      {/* ── Tag filter modal ── */}
       <Modal
         visible={tagFilterVisible}
         transparent
@@ -855,7 +840,6 @@ export default function History() {
         </TouchableOpacity>
       </Modal>
 
-      {/* ── Edit tag modal ── */}
       <Modal
         visible={!!editingItem}
         transparent
@@ -960,7 +944,6 @@ export default function History() {
   );
 }
 
-// ── List styles ─────────────────────────────────────────────────────────────
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: "#050000" },
   scrollView: { flex: 1 },
@@ -1166,7 +1149,6 @@ const styles = StyleSheet.create({
   loadingText: { fontSize: 16, color: "#748cab", marginTop: 16 },
 });
 
-// ── Calendar styles ──────────────────────────────────────────────────────────
 const calStyles = StyleSheet.create({
   overlay: {
     flex: 1,
@@ -1272,7 +1254,6 @@ const calStyles = StyleSheet.create({
   },
 });
 
-// ── Tag modal styles ────────────────────────────────────────────────────────
 const tagModalStyles = StyleSheet.create({
   overlay: {
     flex: 1,

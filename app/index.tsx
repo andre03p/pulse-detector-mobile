@@ -5,7 +5,6 @@ import { useAuth } from "../context/AuthContext";
 export default function Index() {
   const { authState } = useAuth();
 
-  // Show loading indicator while checking auth state
   if (authState?.token === undefined) {
     return (
       <View

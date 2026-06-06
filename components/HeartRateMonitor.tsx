@@ -39,7 +39,6 @@ import { useResizePlugin } from "vision-camera-resize-plugin";
 
 type CaptureMode = "standard" | "minute";
 
-// ─── Constants ────────────────────────────────────────────────────────────────
 const SAMPLING_RATE = 30;
 
 // BPM estimation window: 6 s of signal
@@ -54,14 +53,11 @@ const MIN_QUALITY_SCORE = 25;
 
 const MIN_VALID_READINGS = 12;
 
-// Measurement durations
 const MAX_MEASUREMENT_DURATION_MS = 45_000; // Standard mode (safety timeout)
 // Full 60 s window so the average matches the Empatica per-minute pulse rate.
-const MINUTE_MEASUREMENT_DURATION_MS = 60_000; // Continuous 1-minute mode
+const MINUTE_MEASUREMENT_DURATION_MS = 60_000;
 
 export const PRESET_TAGS = ["Rest", "Low effort", "High effort"];
-
-// ─── Component ────────────────────────────────────────────────────────────────
 
 export default function HeartRateMonitor() {
   const [isMonitoring, setIsMonitoring] = useState(false);
@@ -105,8 +101,6 @@ export default function HeartRateMonitor() {
   const m2 = useRef<number>(0);
   const sampleCount = useRef<number>(0);
 
-  // ─── Animations ─────────────────────────────────────────────────────────────
-
   useEffect(() => {
     if (fingerDetected && currentBPM) {
       const interval = 50000 / currentBPM;
@@ -136,12 +130,9 @@ export default function HeartRateMonitor() {
     }).start();
   }, [isMonitoring]);
 
-  // ─── Frame processing (JS side) ─────────────────────────────────────────────
-
   const handleFrame = useCallback((avgRed: number) => {
     const now = Date.now();
 
-    // ── Finger detection phase ──────────────────────────────────────────────
     if (phase.current === "waiting") {
       if (avgRed > FINGER_DETECTED_THRESHOLD) {
         setFingerDetected(true);
@@ -160,7 +151,6 @@ export default function HeartRateMonitor() {
       return;
     }
 
-    // ── Measuring phase ─────────────────────────────────────────────────────
     if (avgRed < FINGER_LOST_THRESHOLD) {
       setFingerDetected(false);
       phase.current = "waiting";
@@ -181,7 +171,7 @@ export default function HeartRateMonitor() {
       const std = Math.sqrt(m2.current / sampleCount.current);
       const deviation = Math.abs(filtered - runningMean.current);
       if (std > 0 && deviation > 4 * std) {
-        return; // Skip artifact
+        return;
       }
     }
 
@@ -190,7 +180,6 @@ export default function HeartRateMonitor() {
       signal.current.shift();
     }
 
-    // ── Update progress ───────────────────────────────────────────────────────
     const elapsedMs =
       startTime.current !== null
         ? now - startTime.current
@@ -213,13 +202,13 @@ export default function HeartRateMonitor() {
       setProgress(currentProgress);
     }
 
-    // ── Waveform display (throttled to ~8 Hz) ───────────────────────────────
+    // Waveform display, throttled to ~8 Hz
     if (now - lastWave.current > 120) {
       lastWave.current = now;
       setWaveform(signal.current.slice(-120));
     }
 
-    // ── Analysis every 500 ms once the window is full ───────────────────────
+    // Analysis every 500 ms once the window is full
     if (
       signal.current.length === WINDOW_SIZE &&
       now - lastAnalysis.current > 500
@@ -253,7 +242,6 @@ export default function HeartRateMonitor() {
             : weightedMedian(readings.current.slice(-7));
           setCurrentBPM(Math.round(displayBpm));
 
-          // ── Finalize measurement ────────────────────────────────────────────
           const hasEnoughBpm =
             readings.current.length >= MIN_VALID_READINGS;
 
@@ -272,13 +260,11 @@ export default function HeartRateMonitor() {
     }
   }, []);
 
-  // ─── Worklet bridge ─────────────────────────────────────────────────────────
   const sendFrameToJs = useMemo(
     () => Worklets.createRunOnJS(handleFrame),
     [handleFrame],
   );
 
-  // ─── Frame processor ────────────────────────────────────────────────────────
   const frameProcessor = useFrameProcessor(
     (frame) => {
       "worklet";
@@ -300,8 +286,6 @@ export default function HeartRateMonitor() {
     },
     [isMonitoring, sendFrameToJs, resize],
   );
-
-  // ─── Controls ───────────────────────────────────────────────────────────────
 
   const startMonitoring = useCallback(async () => {
     if (!hasPermission) {
@@ -381,8 +365,6 @@ export default function HeartRateMonitor() {
     void persistMeasurement(null);
   };
 
-  // ─── Permission / device guard ──────────────────────────────────────────────
-
   if (!device || !hasPermission)
     return (
       <LinearGradient colors={["#3e5c76", "#748cab"]} style={styles.container}>
@@ -400,8 +382,6 @@ export default function HeartRateMonitor() {
         </View>
       </LinearGradient>
     );
-
-  // ─── Render ─────────────────────────────────────────────────────────────────
 
   return (
     <View style={styles.container}>
@@ -564,7 +544,6 @@ export default function HeartRateMonitor() {
         )}
       </View>
 
-      {/* ── Tag selection modal ── */}
       <Modal
         visible={tagModalVisible}
         transparent
@@ -684,8 +663,6 @@ export default function HeartRateMonitor() {
     </View>
   );
 }
-
-// ─── Styles ──────────────────────────────────────────────────────────────────
 
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: "#000" },
