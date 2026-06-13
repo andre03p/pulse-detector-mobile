@@ -10,7 +10,7 @@ export class ButterworthFilter {
   private y1 = 0;
   private y2 = 0;
 
-  constructor(fs: number, lowCutoff = 0.667, highCutoff = 4.0) {
+  constructor(fs: number, lowCutoff = 0.6, highCutoff = 3.8) {
     const warpedLow = Math.tan((Math.PI * lowCutoff) / fs);
     const warpedHigh = Math.tan((Math.PI * highCutoff) / fs);
     const bandwidth = warpedHigh - warpedLow;
@@ -36,7 +36,6 @@ export class ButterworthFilter {
     this.x1 = this.x2 = this.y1 = this.y2 = 0;
   }
 }
-
 
 export function detrendSignal(signal: number[]): number[] {
   const n = signal.length;
@@ -67,7 +66,6 @@ export function applyHannWindow(signal: number[]): number[] {
     (val, i) => val * 0.5 * (1 - Math.cos((2 * Math.PI * i) / (n - 1))),
   );
 }
-
 
 interface Complex {
   re: number;
@@ -106,16 +104,42 @@ function getMagnitude(c: Complex): number {
   return Math.sqrt(c.re * c.re + c.im * c.im);
 }
 
+// Physiologically plausible heart-rate range — single source of truth shared
+// by both estimators and the UI acceptance check.
+export const MIN_BPM = 40;
+export const MAX_BPM = 200;
 
-export function estimateHeartRateFFT(signal: number[], fs: number): number {
-  if (signal.length < 30) return 0;
+export interface PowerSpectrum {
+  powerSpectrum: number[];
+  freqResolution: number;
+}
 
+/**
+ * Detrend -> Hann window -> FFT -> half-spectrum magnitudes.
+ * Computed once per window and shared between the FFT estimator and the
+ * signal-quality index, which would otherwise each run their own FFT.
+ */
+export function computePowerSpectrum(
+  signal: number[],
+  fs: number,
+): PowerSpectrum {
   const detrended = detrendSignal(signal);
   const windowed = applyHannWindow(detrended);
   const fftResult = fft(windowed);
   const n = fftResult.length;
   const powerSpectrum = fftResult.slice(0, Math.floor(n / 2)).map(getMagnitude);
-  const freqResolution = fs / n;
+  return { powerSpectrum, freqResolution: fs / n };
+}
+
+export function estimateHeartRateFFT(
+  signal: number[],
+  fs: number,
+  spectrum?: PowerSpectrum,
+): number {
+  if (signal.length < 30) return 0;
+
+  const { powerSpectrum, freqResolution } =
+    spectrum ?? computePowerSpectrum(signal, fs);
 
   const minIndex = Math.max(1, Math.floor(0.6 / freqResolution));
   const maxIndex = Math.min(
@@ -148,7 +172,7 @@ export function estimateHeartRateFFT(signal: number[], fs: number): number {
     if (powerSpectrum[harmonicIndex] > maxPower * 0.7) return bpm / 2;
   }
 
-  return bpm >= 40 && bpm <= 220 ? bpm : 0;
+  return bpm >= MIN_BPM && bpm <= MAX_BPM ? bpm : 0;
 }
 
 /**
@@ -184,8 +208,8 @@ export function estimateBpmFromAutocorrelation(
   const variance = detrended.reduce((sum, x) => sum + x * x, 0);
   if (variance < 1e-10) return 0;
 
-  const minLag = Math.floor(fs * (60 / 220));
-  const maxLag = Math.floor(fs * (60 / 40));
+  const minLag = Math.floor((fs * 60) / MAX_BPM);
+  const maxLag = Math.floor((fs * 60) / MIN_BPM);
 
   const autocorr: number[] = [];
   for (let lag = minLag; lag <= maxLag; lag++) {
@@ -217,58 +241,49 @@ export function estimateBpmFromAutocorrelation(
   }
 
   const bpm = 60 / (refinedLag / fs);
-  return bpm >= 40 && bpm <= 220 ? bpm : 0;
+  return bpm >= MIN_BPM && bpm <= MAX_BPM ? bpm : 0;
 }
 
+// Methods disagreeing by more than this (BPM) means one likely locked onto a
+// harmonic, so we abstain instead of averaging two inconsistent values.
+const MAX_METHOD_DISAGREEMENT = 20;
 
-export interface BpmEstimate {
-  bpm: number;
-  confidence: number;
-  method: string;
-}
-
+/**
+ * Combined estimate from FFT + autocorrelation. Returns 0 when there is no
+ * usable estimate (no peak found, or the two methods disagree strongly).
+ */
 export function estimateBpm(
   signal: number[],
   fs: number,
-): BpmEstimate {
-  if (signal.length < 30)
-    return { bpm: 0, confidence: 0, method: "insufficient_data" };
+  spectrum?: PowerSpectrum,
+): number {
+  if (signal.length < 30) return 0;
 
-  const fftBpm = estimateHeartRateFFT(signal, fs);
+  const fftBpm = estimateHeartRateFFT(signal, fs, spectrum);
   const autocorrBpm = estimateBpmFromAutocorrelation(signal, fs);
 
-  if (fftBpm === 0 && autocorrBpm === 0)
-    return { bpm: 0, confidence: 0, method: "no_valid_estimate" };
-  if (fftBpm === 0)
-    return { bpm: autocorrBpm, confidence: 0.4, method: "autocorr" };
-  if (autocorrBpm === 0) return { bpm: fftBpm, confidence: 0.4, method: "fft" };
+  if (fftBpm === 0 && autocorrBpm === 0) return 0;
+  if (fftBpm === 0) return autocorrBpm;
+  if (autocorrBpm === 0) return fftBpm;
 
-  const avg = Math.round((fftBpm + autocorrBpm) / 2);
-  const diff = Math.abs(fftBpm - autocorrBpm);
+  if (Math.abs(fftBpm - autocorrBpm) >= MAX_METHOD_DISAGREEMENT) return 0;
 
-  if (diff < 6) return { bpm: avg, confidence: 0.95, method: "ensemble_high" };
-  if (diff < 10)
-    return { bpm: avg, confidence: 0.85, method: "ensemble_medium" };
-  if (diff < 20) return { bpm: avg, confidence: 0.65, method: "ensemble_low" };
-
-  // Methods disagree strongly — abstain rather than average two potentially wrong values.
-  return { bpm: 0, confidence: 0, method: "ensemble_uncertain" };
+  return Math.round((fftBpm + autocorrBpm) / 2);
 }
-
 
 /**
  * Signal Quality Index — 3 weighted metrics, returns 0–100.
  * Metrics: spectral purity (0.5), SNR (0.3), amplitude stability (0.2).
  */
-export function calculateSignalQuality(signal: number[], fs: number): number {
+export function calculateSignalQuality(
+  signal: number[],
+  fs: number,
+  spectrum?: PowerSpectrum,
+): number {
   if (signal.length < 30) return 0;
 
-  const detrended = detrendSignal(signal);
-  const windowed = applyHannWindow(detrended);
-  const fftResult = fft(windowed);
-  const n = fftResult.length;
-  const powerSpectrum = fftResult.slice(0, Math.floor(n / 2)).map(getMagnitude);
-  const freqResolution = fs / n;
+  const { powerSpectrum, freqResolution } =
+    spectrum ?? computePowerSpectrum(signal, fs);
 
   const minIndex = Math.floor(0.6 / freqResolution);
   const maxIndex = Math.ceil(3.8 / freqResolution);
@@ -292,7 +307,6 @@ export function calculateSignalQuality(signal: number[], fs: number): number {
   const scores = [spectralScore, snrScore, stabilityScore];
   return weights.reduce((sum, w, i) => sum + w * scores[i], 0) * 100;
 }
-
 
 export function median(values: number[]): number {
   if (values.length === 0) return 0;

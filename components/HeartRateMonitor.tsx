@@ -3,8 +3,11 @@ import { addMeasurement } from "@/lib/supabaseQueries";
 import {
   ButterworthFilter,
   calculateSignalQuality,
+  computePowerSpectrum,
   estimateBpm,
+  MAX_BPM,
   mean,
+  MIN_BPM,
   weightedMedian,
 } from "@/utils/heartRateDetection";
 import Entypo from "@expo/vector-icons/Entypo";
@@ -47,8 +50,6 @@ const WINDOW_SIZE = 180;
 const FINGER_DETECTED_THRESHOLD = 80;
 const FINGER_LOST_THRESHOLD = 40;
 
-const MIN_VALID_BPM = 30;
-const MAX_VALID_BPM = 200;
 const MIN_QUALITY_SCORE = 25;
 
 const MIN_VALID_READINGS = 12;
@@ -150,7 +151,6 @@ export default function HeartRateMonitor() {
       }
       return;
     }
-
     if (avgRed < FINGER_LOST_THRESHOLD) {
       setFingerDetected(false);
       phase.current = "waiting";
@@ -180,10 +180,7 @@ export default function HeartRateMonitor() {
       signal.current.shift();
     }
 
-    const elapsedMs =
-      startTime.current !== null
-        ? now - startTime.current
-        : 0;
+    const elapsedMs = startTime.current !== null ? now - startTime.current : 0;
 
     if (now - lastProgress.current > 100) {
       lastProgress.current = now;
@@ -194,10 +191,7 @@ export default function HeartRateMonitor() {
           1,
         );
       } else {
-        currentProgress = Math.min(
-          signal.current.length / WINDOW_SIZE,
-          1,
-        );
+        currentProgress = Math.min(signal.current.length / WINDOW_SIZE, 1);
       }
       setProgress(currentProgress);
     }
@@ -215,23 +209,18 @@ export default function HeartRateMonitor() {
     ) {
       lastAnalysis.current = now;
 
+      const spectrum = computePowerSpectrum(signal.current, SAMPLING_RATE);
       const quality = calculateSignalQuality(
         signal.current,
         SAMPLING_RATE,
+        spectrum,
       );
 
       if (quality >= MIN_QUALITY_SCORE) {
-        const estimate = estimateBpm(
-          signal.current,
-          SAMPLING_RATE,
-        );
+        const bpm = estimateBpm(signal.current, SAMPLING_RATE, spectrum);
 
-        if (
-          estimate.bpm >= MIN_VALID_BPM &&
-          estimate.bpm <= MAX_VALID_BPM &&
-          estimate.confidence >= 0.4
-        ) {
-          readings.current.push(estimate.bpm);
+        if (bpm >= MIN_BPM && bpm <= MAX_BPM) {
+          readings.current.push(bpm);
 
           // Minute mode reports the AVERAGE over the whole window to match the
           // Empatica EmbracePlus per-minute pulse rate (it averages, never peaks).
@@ -242,8 +231,7 @@ export default function HeartRateMonitor() {
             : weightedMedian(readings.current.slice(-7));
           setCurrentBPM(Math.round(displayBpm));
 
-          const hasEnoughBpm =
-            readings.current.length >= MIN_VALID_READINGS;
+          const hasEnoughBpm = readings.current.length >= MIN_VALID_READINGS;
 
           if (isMinute) {
             if (elapsedMs >= MINUTE_MEASUREMENT_DURATION_MS) {
@@ -370,9 +358,7 @@ export default function HeartRateMonitor() {
       <LinearGradient colors={["#3e5c76", "#748cab"]} style={styles.container}>
         <View style={styles.permissionContainer}>
           <Entypo name="camera" size={60} color="#fff" />
-          <Text style={styles.permissionText}>
-            Camera access is required
-          </Text>
+          <Text style={styles.permissionText}>Camera access is required</Text>
           <TouchableOpacity
             onPress={requestPermission}
             style={styles.permissionBtn}
@@ -568,13 +554,8 @@ export default function HeartRateMonitor() {
                     return (
                       <TouchableOpacity
                         key={t}
-                        onPress={() =>
-                          setSelectedTag(active ? null : t)
-                        }
-                        style={[
-                          tagStyles.chip,
-                          active && tagStyles.chipActive,
-                        ]}
+                        onPress={() => setSelectedTag(active ? null : t)}
+                        style={[tagStyles.chip, active && tagStyles.chipActive]}
                         activeOpacity={0.8}
                       >
                         <Text
@@ -870,7 +851,12 @@ const styles = StyleSheet.create({
   },
   statusText: { color: "#e0e0e0", fontSize: 14, fontWeight: "600" },
 
-  progressContainer: { width: "100%", alignItems: "center", gap: 8, marginTop: 8 },
+  progressContainer: {
+    width: "100%",
+    alignItems: "center",
+    gap: 8,
+    marginTop: 8,
+  },
   progressBarWrapper: {
     width: "100%",
     height: 8,
