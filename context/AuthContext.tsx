@@ -44,7 +44,6 @@ export const AuthProvider = ({ children }: any) => {
   });
 
   useEffect(() => {
-    // Check for existing session
     const checkSession = async () => {
       try {
         const {
@@ -176,7 +175,11 @@ export const AuthProvider = ({ children }: any) => {
       });
 
       if (data.user?.id && data.user?.email) {
-        await createUserProfile(data.user.id, data.user.email, data.user.user_metadata?.display_name);
+        await createUserProfile(
+          data.user.id,
+          data.user.email,
+          data.user.user_metadata?.display_name,
+        );
       }
 
       return { error: false, msg: "Login successful!", data };
@@ -240,10 +243,10 @@ export const AuthProvider = ({ children }: any) => {
   ) => {
     try {
       const { error: verifyError } = await supabase.auth.verifyOtp({
-          email: email,
-          token: token,
-          type: "email",
-        });
+        email: email,
+        token: token,
+        type: "email",
+      });
 
       if (verifyError) {
         console.error("OTP verification error:", verifyError);
