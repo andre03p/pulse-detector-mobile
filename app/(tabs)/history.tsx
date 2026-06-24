@@ -243,14 +243,10 @@ export default function History() {
         return;
       }
     } catch (error) {
-      console.log("expo-sharing failed, falling back to RN Share", error);
+      console.log("expo-sharing failed", error);
     }
     try {
-      if (Platform.OS === "ios") {
-        await Share.share({ url: uri });
-      } else {
-        await Share.share({ message: `File saved at: ${uri}`, url: uri });
-      }
+      await Share.share({ message: `File saved at: ${uri}`, url: uri });
     } catch (error) {
       console.error("Share error:", error);
       Alert.alert("Export successful", `File saved to: ${uri}`);
@@ -671,9 +667,7 @@ export default function History() {
                           size={11}
                           color="#748cab"
                         />
-                        <Text style={styles.cardTagEmptyText}>
-                          Add tag
-                        </Text>
+                        <Text style={styles.cardTagEmptyText}>Add tag</Text>
                       </View>
                     )}
                   </View>
@@ -851,7 +845,8 @@ export default function History() {
             <Text style={tagModalStyles.title}>Edit tag</Text>
             {editingItem && (
               <Text style={tagModalStyles.subtitle}>
-                {editingItem.heartRate} BPM · {formatDate(editingItem.created_at)}{" "}
+                {editingItem.heartRate} BPM ·{" "}
+                {formatDate(editingItem.created_at)}{" "}
                 {formatTime(editingItem.created_at)}
               </Text>
             )}
@@ -863,9 +858,7 @@ export default function History() {
                   return (
                     <TouchableOpacity
                       key={t}
-                      onPress={() =>
-                        setEditTagValue(active ? null : t)
-                      }
+                      onPress={() => setEditTagValue(active ? null : t)}
                       style={[
                         tagModalStyles.chip,
                         active && tagModalStyles.chipActive,

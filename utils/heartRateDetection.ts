@@ -45,6 +45,7 @@ export function detrendSignal(signal: number[]): number[] {
     sumY = 0,
     sumXY = 0,
     sumX2 = 0;
+
   for (let i = 0; i < n; i++) {
     sumX += i;
     sumY += signal[i];
@@ -166,7 +167,6 @@ export function estimateHeartRateFFT(
   const freqHz = refinedIndex * freqResolution;
   const bpm = freqHz * 60;
 
-  // Harmonic check: if half-frequency also has strong power, we locked on a harmonic
   const harmonicIndex = Math.round(refinedIndex * 2);
   if (harmonicIndex < powerSpectrum.length) {
     if (powerSpectrum[harmonicIndex] > maxPower * 0.7) return bpm / 2;
@@ -192,7 +192,7 @@ function refinePeak(signal: number[], peakIndex: number): number {
   if (Math.abs(denominator) < 1e-10) return peakIndex;
 
   const offset = (0.5 * (y1 - y3)) / denominator;
-  // Clamp to ±0.5 samples — anything larger indicates a pathological case
+
   return peakIndex + Math.max(-0.5, Math.min(0.5, offset));
 }
 
@@ -246,7 +246,7 @@ export function estimateBpmFromAutocorrelation(
 
 // Methods disagreeing by more than this (BPM) means one likely locked onto a
 // harmonic, so we abstain instead of averaging two inconsistent values.
-const MAX_METHOD_DISAGREEMENT = 20;
+const MAX_METHOD_DISAGREEMENT = 15;
 
 /**
  * Combined estimate from FFT + autocorrelation. Returns 0 when there is no

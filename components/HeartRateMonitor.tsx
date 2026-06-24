@@ -222,9 +222,6 @@ export default function HeartRateMonitor() {
         if (bpm >= MIN_BPM && bpm <= MAX_BPM) {
           readings.current.push(bpm);
 
-          // Minute mode reports the AVERAGE over the whole window to match the
-          // Empatica EmbracePlus per-minute pulse rate (it averages, never peaks).
-          // Standard mode keeps a responsive value weighted toward recent readings.
           const isMinute = activeMode.current === "minute";
           const displayBpm = isMinute
             ? mean(readings.current)
