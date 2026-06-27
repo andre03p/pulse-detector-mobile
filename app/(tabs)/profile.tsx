@@ -91,7 +91,7 @@ export default function Profile() {
           </TouchableOpacity>
 
           <View style={styles.footer}>
-            <Text style={styles.footerText}>PulseDetector v1.0.0</Text>
+            <Text style={styles.footerText}>HeartCheck v1.0.0</Text>
           </View>
         </View>
       </ScrollView>
