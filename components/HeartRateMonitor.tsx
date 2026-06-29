@@ -98,10 +98,6 @@ export default function HeartRateMonitor() {
   const lastWave = useRef<number>(0);
   const lastProgress = useRef<number>(0);
 
-  const runningMean = useRef<number>(0);
-  const m2 = useRef<number>(0);
-  const sampleCount = useRef<number>(0);
-
   useEffect(() => {
     if (fingerDetected && currentBPM) {
       const interval = 50000 / currentBPM;
@@ -142,9 +138,6 @@ export default function HeartRateMonitor() {
         signal.current = [];
         readings.current = [];
         filter.current.reset();
-        runningMean.current = 0;
-        m2.current = 0;
-        sampleCount.current = 0;
         setProgress(0);
       } else {
         setFingerDetected(false);
@@ -160,20 +153,6 @@ export default function HeartRateMonitor() {
     }
 
     const filtered = filter.current.process(avgRed);
-
-    sampleCount.current += 1;
-    const delta = filtered - runningMean.current;
-    runningMean.current += delta / sampleCount.current;
-    const delta2 = filtered - runningMean.current;
-    m2.current += delta * delta2;
-
-    if (sampleCount.current > 30) {
-      const std = Math.sqrt(m2.current / sampleCount.current);
-      const deviation = Math.abs(filtered - runningMean.current);
-      if (std > 0 && deviation > 4 * std) {
-        return;
-      }
-    }
 
     signal.current.push(filtered);
     if (signal.current.length > WINDOW_SIZE) {
@@ -282,9 +261,6 @@ export default function HeartRateMonitor() {
     signal.current = [];
     readings.current = [];
     startTime.current = null;
-    runningMean.current = 0;
-    m2.current = 0;
-    sampleCount.current = 0;
     lastProgress.current = 0;
     lastWave.current = 0;
     lastAnalysis.current = 0;
