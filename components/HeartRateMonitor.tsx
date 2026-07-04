@@ -89,6 +89,7 @@ export default function HeartRateMonitor() {
 
   const filter = useRef(new ButterworthFilter(SAMPLING_RATE));
   const signal = useRef<number[]>([]);
+  const rawSignal = useRef<number[]>([]);
   const startTime = useRef<number | null>(null);
 
   const activeMode = useRef<CaptureMode>("standard");
@@ -136,6 +137,7 @@ export default function HeartRateMonitor() {
         phase.current = "measuring";
         startTime.current = now;
         signal.current = [];
+        rawSignal.current = [];
         readings.current = [];
         filter.current.reset();
         setProgress(0);
@@ -155,8 +157,10 @@ export default function HeartRateMonitor() {
     const filtered = filter.current.process(avgRed);
 
     signal.current.push(filtered);
+    rawSignal.current.push(avgRed);
     if (signal.current.length > WINDOW_SIZE) {
       signal.current.shift();
+      rawSignal.current.shift();
     }
 
     const elapsedMs = startTime.current !== null ? now - startTime.current : 0;
@@ -192,6 +196,7 @@ export default function HeartRateMonitor() {
       const quality = calculateSignalQuality(
         signal.current,
         SAMPLING_RATE,
+        rawSignal.current,
         spectrum,
       );
 

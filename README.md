@@ -1,50 +1,116 @@
-# Welcome to your Expo app 👋
+# HeartCheck – Aplicație mobilă pentru monitorizarea ritmului cardiac
 
-This is an [Expo](https://expo.dev) project created with [`create-expo-app`](https://www.npmjs.com/package/create-expo-app).
+Aplicație mobilă (Android) care măsoară ritmul cardiac (BPM) folosind camera și blițul
+telefonului prin tehnica **fotopletismografiei (PPG)**: utilizatorul acoperă camera
+și blițul cu degetul, iar aplicația analizează în timp real variațiile de lumină
+absorbită pentru a estima ritmul cardiac. Măsurătorile pot fi etichetate, salvate, exportate și vizualizate ca istoric și statistici.
 
-## Get started
+## 1. Adresa repository-ului
 
-1. Install dependencies
+`https://github.com/andre03p/pulse-detector-mobile.git`
 
-   ```bash
-   npm install
-   ```
+## 2. Livrabile
 
-2. Start the app
+- Aplicația mobilă React Native (Expo), platformă Android.
+- Cod sursă TypeScript:
+  - `app/` – ecrane și navigație (Expo Router): autentificare, home, istoric,
+    statistici, alarme, profil;
+  - `components/` – componente UI (monitorul de puls, graficul de undă etc.);
+  - `utils/heartRateDetection.ts` – algoritmii de estimare a pulsului;
+  - `lib/` – integrarea Supabase (auth + interogări);
+  - `context/AuthContext.tsx` – gestionarea sesiunii de utilizator.
 
-   ```bash
-   npx expo start
-   ```
+## 3. Cerințe preliminare
 
-In the output, you'll find options to open the app in a
+| Componentă         | Versiune recomandată                              |
+| ------------------ | ------------------------------------------------- |
+| Node.js            | ≥ 20 LTS                                          |
+| npm                | ≥ 10                                              |
+| Expo CLI / EAS CLI | rulate prin `npx` (nu necesită instalare globală) |
+| Cont Expo (EAS)    | necesar pentru build-uri în cloud                 |
+| Cont Supabase      | necesar pentru backend (auth + DB)                |
 
-- [development build](https://docs.expo.dev/develop/development-builds/introduction/)
-- [Android emulator](https://docs.expo.dev/workflow/android-studio-emulator/)
-- [iOS simulator](https://docs.expo.dev/workflow/ios-simulator/)
-- [Expo Go](https://expo.dev/go), a limited sandbox for trying out app development with Expo
+## 4. Configurare (obligatorie înainte de compilare)
 
-You can start developing by editing the files inside the **app** directory. This project uses [file-based routing](https://docs.expo.dev/router/introduction).
-
-## Get a fresh project
-
-When you're ready, run:
+Aplicația citește configurarea Supabase din variabile de mediu. Fișierul `.env`
+**nu este inclus în repository** și trebuie creat manual în project root.
 
 ```bash
-npm run reset-project
+# .env
+EXPO_PUBLIC_SUPABASE_URL=https://<project_name>.supabase.co
+EXPO_PUBLIC_SUPABASE_ANON_KEY=<public-anon-key-supabase>
 ```
 
-This command will move the starter code to the **app-example** directory and create a blank **app** directory where you can start developing.
+## 5. Pași de compilare
 
-## Learn more
+### 5.1. Clonare și instalare dependențe
 
-To learn more about developing your project with Expo, look at the following resources:
+```bash
+git clone https://github.com/andre03p/pulse-detector-mobile.git
+cd pulse-detector-mobile
+npm install
+```
 
-- [Expo documentation](https://docs.expo.dev/): Learn fundamentals, or go into advanced topics with our [guides](https://docs.expo.dev/guides).
-- [Learn Expo tutorial](https://docs.expo.dev/tutorial/introduction/): Follow a step-by-step tutorial where you'll create a project that runs on Android, iOS, and the web.
+### 5.2. Generarea build-ului nativ (APK Android)
 
-## Join the community
+Aplicația folosește module native (camera), deci build-ul se face cu **EAS Build**.
+Profilurile sunt definite în `eas.json`.
 
-Join our community of developers creating universal apps.
+Autentificare EAS (o singură dată):
 
-- [Expo on GitHub](https://github.com/expo/expo): View our open source platform and contribute.
-- [Discord community](https://chat.expo.dev): Chat with Expo users and ask questions.
+```bash
+npx eas login
+```
+
+**Build cu profilul `development`:**
+
+```bash
+npx eas build -p android --profile development
+```
+
+La final, EAS oferă un link sau un cod QR de unde se descarcă fișierul `.apk`. Acesta este un
+_development client_: **nu conține** bundle-ul JavaScript împachetat, ci îl încarcă
+la pornire de la serverul Metro (`npx expo start`) rulat pe laptop, telefonul fiind
+pe **aceeași rețea Wi-Fi**.
+
+> **Alternativ**, se poate genera și un **APK autonom** (rulează singur pe telefon,
+> fără laptop și fără Wi-Fi comun) folosind profilul `production`:
+>
+> ```bash
+> npx eas build -p android --profile production
+> ```
+
+## 6. Instalare și lansare a aplicației
+
+Pași pentru APK-ul `development` (laptopul și telefonul pe aceeași rețea Wi-Fi):
+
+1. Descărcați `.apk`-ul din linkul oferit de EAS și transferați-l pe telefonul
+   Android (link, cablu USB, cloud etc.).
+2. Pe telefon, permiteți instalarea din surse necunoscute și instalați APK-ul.
+3. Porniți serverul de dezvoltare (Metro) pe laptop, în folderul proiectului:
+
+   ```bash
+   npx expo start --dev-client
+   ```
+
+4. Deschideți aplicația **HeartCheck** pe telefon — aceasta se conectează la serverul
+   Metro și încarcă codul prin Wi-Fi.
+5. La prima pornire acordați permisiunea de **cameră** (și opțional notificări).
+6. Creați un cont / autentificați-vă, apoi apăsați **Start Measurement**, acoperiți
+   camera și blițul cu degetul și mențineți mâna nemișcată până la finalizarea
+   măsurătorii.
+
+## 7. Structura proiectului
+
+```
+app/            Ecrane și navigație (Expo Router)
+  (auth)/       Login, register, resetare parolă, verificare email
+  (tabs)/       home, history, stats, alarms, profile
+components/     Componente UI (HeartRateMonitor, PulseWave, grafice, footer)
+context/        AuthContext (sesiune utilizator)
+lib/            Client Supabase și interogări (măsurători, alarme, statistici)
+utils/          Algoritmi detecție puls (FFT, autocorelație, SQI) și notificări
+assets/         Imagini, iconițe, fonturi
+eas.json        Profiluri de build EAS (development / preview / production)
+app.json        Configurarea aplicației Expo (nume, permisiuni, plugin-uri)
+```

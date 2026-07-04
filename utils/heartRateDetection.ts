@@ -167,7 +167,7 @@ export function estimateHeartRateFFT(
   const freqHz = refinedIndex * freqResolution;
   const bpm = freqHz * 60;
 
-  const harmonicIndex = Math.round(refinedIndex * 2);
+  const harmonicIndex = Math.round(refinedIndex / 2);
   if (harmonicIndex < powerSpectrum.length) {
     if (powerSpectrum[harmonicIndex] > maxPower * 0.7) return bpm / 2;
   }
@@ -271,13 +271,10 @@ export function estimateBpm(
   return Math.round((fftBpm + autocorrBpm) / 2);
 }
 
-/**
- * Signal Quality Index — 3 weighted metrics, returns 0–100.
- * Metrics: spectral purity (0.5), SNR (0.3), amplitude stability (0.2).
- */
 export function calculateSignalQuality(
   signal: number[],
   fs: number,
+  rawSignal: number[],
   spectrum?: PowerSpectrum,
 ): number {
   if (signal.length < 30) return 0;
@@ -296,9 +293,9 @@ export function calculateSignalQuality(
   const snr = calculateSNR(signal);
   const snrScore = Math.min(Math.max((snr - 5) / 20, 0), 1);
 
-  const mean = signal.reduce((a, b) => a + b, 0) / signal.length;
+  const mean = rawSignal.reduce((a, b) => a + b, 0) / rawSignal.length;
   const variance =
-    signal.reduce((a, b) => a + Math.pow(b - mean, 2), 0) / signal.length;
+    rawSignal.reduce((a, b) => a + Math.pow(b - mean, 2), 0) / rawSignal.length;
   const cv = mean > 0 ? Math.sqrt(variance) / mean : 0;
   const stabilityScore =
     cv > 0.01 && cv < 0.5 ? 1 : Math.exp(-Math.abs(cv - 0.1) / 0.2);
